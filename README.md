@@ -1,5 +1,41 @@
 # Targeted Distillation for Sentiment Analysis
 
+## Kaggle / Colab notebook
+
+Upload [Sentiment_Distillation_Kaggle_Colab.ipynb](notebooks/Sentiment_Distillation_Kaggle_Colab.ipynb)
+to Kaggle (GPU + Internet enabled) or Colab (GPU runtime), then run cells in order.
+The notebook bundles the patched evaluation source and downloads benchmark data from a fixed upstream commit.
+It does not need access to this private repository, and it does not implement fine-tuning.
+
+Notebook defaults: Qwen 1.5B, SST2, first 32 test examples, batch size 1, four demonstrations,
+2,048 input tokens. Set `MAX_SAMPLES=0` for a full dataset. This smoke configuration is not a full SentiBench score.
+
+The notebook creates a separate venv that can access platform packages to reuse the existing CUDA-enabled
+PyTorch. Project packages are installed into that venv, and all evaluators run in its subprocesses.
+This is partial isolation, not a container. A pip dry-run blocks changes to PyTorch/NVIDIA/Triton packages.
+Runtime checks validate the evaluation dependency closure, imports, tiny-model GPU inference/generation,
+and optional 4-bit operations before the real evaluation starts. Logs and an environment report are exported.
+The original `requirements.txt` is retained for reference; the notebook uses `requirements-notebook.txt`.
+
+Evaluation saves atomic prediction checkpoints after each batch. Restore those files into `OUTPUT` to resume
+in a new session with identical data, settings, source and package versions. Save Kaggle outputs or download
+the results ZIP before the session ends; on Colab, use a mounted Drive output directory or download the ZIP.
+GPU availability, quotas and session lifetimes remain controlled by the platform.
+
+The patched scripts select FP16/BF16 automatically, accept Hugging Face IDs or local model directories,
+honor input token limits, support optional NF4, and record experiment settings. They warn when demonstrations
+are truncated and reject truncating away the test sentence. `parse.py` separates settings and reports missing
+datasets as N/A rather than zero. Precision, truncation and changed demonstrations may affect benchmark scores.
+
+The bundled configuration has **not been executed on Kaggle/Colab or dependency-tested locally**;
+the user will run the included live checks on Kaggle. Static source/notebook checks are performed locally.
+To rebuild the standalone notebook after changing the evaluator, run `python tools/build_notebook.py`.
+
+Platform references: [Kaggle](https://www.kaggle.com/docs/notebooks),
+[Colab resource limits](https://research.google.com/colaboratory/faq.html).
+
+---
+
 This repository contains the official datasets, and evaluation scripts for the paper:
 
 **Targeted Distillation for Sentiment Analysis**

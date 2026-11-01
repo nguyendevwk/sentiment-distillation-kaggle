@@ -1,75 +1,60 @@
-import json
-import numpy as np
-import os
+"""Summarize modern result metadata and legacy SentiBench result names."""
+import argparse
 from collections import defaultdict
+import json
+from pathlib import Path
+import re
 
-def parse_icl_fsa_matrics(experiments):
-    """
-    解析性能数据并以美观表格输出，包含平均值列，按指定顺序打印列。
-
-    :param path: 数据文件路径
-    :param experiments: 需要解析的实验名称列表
-    """
-    path = "./output/result.txt"
-    # 读取数据
-    data = []
-    with open(path, 'r', encoding='utf-8-sig') as f:
-        for line in f:
-            data.append(json.loads(line))
-
-    # 定义列顺序
-    datasets1 = [ 'sc/imdb', 'sc/yelp2', 'sc/sst2', 'sc/twitter', 'multifaced/irony18', 'multifaced/tweeteval', 'multifaced/pstance', 'multifaced/intimacy',]
-
-    datasets2 = [ 'absa/asqp_rest16', 'absa/opener', 'absa/atsa_rest16', 'absa/acsa_rest16', ]
-
-    datasets = datasets1 + datasets2
-
-    header = f"{'Experiment':<100} | " + " | ".join(f"{dataset:<50}" for dataset in datasets) + " | Average"
-    print(header)
-    # 处理每个实验
-    for experiment in experiments:
-        result = defaultdict(list)
-        filtered_data = [item for item in data if experiment in item[0]]
-
-        for item in filtered_data:
-            keys = item[0].split('_')
-            model, dataset, seed, k = keys[-10], keys[-9], keys[-8], keys[-7][-1]
-            if  'absa' in model:
-                dataset = keys[-10] + '_' + keys[-9]
-                model = keys[-11]
-            # print(model, dataset, seed, k)
-            result[(model, dataset, k)].append(item[1]['f1'])
+DATASETS = ['sc/imdb', 'sc/yelp2', 'sc/sst2', 'sc/twitter',
+            'multifaced/irony18', 'multifaced/tweeteval', 'multifaced/pstance',
+            'multifaced/intimacy', 'absa/asqp_rest16', 'absa/opener',
+            'absa/atsa_rest16', 'absa/acsa_rest16']
 
 
-        # 计算每个数据集的平均值
-        final_result = {}
-        for k, v in result.items():
-            # print(k[1], sum(v)/len(v)*100)
-            # print(v)
-            # if len(v) != 3:
-            #     print('error')
-            final_result[k[1]] = sum(v) / len(v) * 100
-        # print(final_result)
- 
-        # 计算行平均值
-        row_values = [final_result.get(dataset.lower(), 0) for dataset in datasets]
-        row_average = sum(row_values) / len(datasets)
+def summarize(path, experiments=None):
+    groups = defaultdict(lambda: defaultdict(dict))
+    for line in Path(path).read_text(encoding='utf-8-sig').splitlines():
+        if not line.strip():
+            continue
+        name, metrics = json.loads(line)
+        metadata = metrics.get('metadata')
+        if metadata:
+            experiment = metadata['experiment']
+            dataset = metadata['dataset']
+            settings = json.dumps(metadata['settings'], sort_keys=True)
+            seed = metadata['seed']
+        else:
+            match = re.fullmatch(r'(.+)_((?:sc|multifaced|absa)/.+)_(-?\d+)_numOfshot(\d+)_(\d{4}(?:_\d{2}){5})', name)
+            if not match:
+                raise ValueError(f'Unrecognized legacy result name: {name}')
+            experiment, dataset, seed, shots, _ = match.groups()
+            settings = json.dumps({'legacy': True, 'k_shot': int(shots)}, sort_keys=True)
+        if experiments and not any(e in experiment for e in experiments):
+            continue
+        # Re-running the same seed replaces its older result.
+        groups[(experiment, settings)][dataset][str(seed)] = metrics['f1']
+    if not groups:
+        print('No completed evaluation results found.')
+    for (experiment, settings), datasets in groups.items():
+        print(f'\nExperiment: {experiment}\nSettings: {settings}')
+        means = []
+        for dataset in DATASETS:
+            values = list(datasets.get(dataset, {}).values())
+            if values:
+                mean = sum(values) / len(values) * 100
+                means.append(mean)
+                print(f'{dataset:<26} {mean:7.2f}  ({len(values)} seed(s))')
+            else:
+                print(f'{dataset:<26}     N/A')
+        if len(means) == len(DATASETS):
+            print(f'SentiBench average: {sum(means) / len(means):.2f}')
+        elif means:
+            print(f'Partial average ({len(means)}/12 datasets): {sum(means) / len(means):.2f}; not the full benchmark score')
 
-        # 打印结果
-        row = f"{experiment:<100} | " + " | ".join(f"{value:<30.2f}" for value in row_values) + f" | {row_average:<30.2f}"
-        print(row)
 
-
-
-
-
-experiment_names= [
-"qwen2.5-distilled",
-"llama-3-1b-distilled",
-"llama-3-3b-distilled"
-    
-]
-
-
-parse_icl_fsa_matrics(experiment_names)
-
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--path', default='./output/result.txt')
+    parser.add_argument('--experiments', nargs='*')
+    args = parser.parse_args()
+    summarize(args.path, args.experiments)
