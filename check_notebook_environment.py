@@ -15,7 +15,8 @@ def check(requirements_path, four_bit=False, require_gpu=False):
                     if line.strip() and not line.lstrip().startswith('#')]
     requirements.extend([Requirement('torch>=2.2,<3'), Requirement('packaging>=23')])
     if four_bit:
-        requirements.append(Requirement('bitsandbytes==0.45.5'))
+        bnb_version = '0.46.1' if sys.version_info[:2] >= (3, 13) else '0.45.5'
+        requirements.append(Requirement(f'bitsandbytes=={bnb_version}'))
     pending = [(r, 'notebook requirements') for r in requirements]
     visited, errors = set(), []
     while pending:
@@ -78,7 +79,8 @@ def check(requirements_path, four_bit=False, require_gpu=False):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--requirements', default=str(Path(__file__).with_name('requirements-notebook.txt')))
+    profile = 'requirements-notebook-py313.txt' if sys.version_info[:2] >= (3, 13) else 'requirements-notebook.txt'
+    parser.add_argument('--requirements', default=str(Path(__file__).with_name(profile)))
     parser.add_argument('--four-bit', action='store_true')
     parser.add_argument('--require-gpu', action='store_true')
     parser.add_argument('--report', default='environment-report.json')

@@ -33,7 +33,10 @@ PyTorch. Project packages are installed into that venv, and all evaluators run i
 This is partial isolation, not a container. A pip dry-run blocks changes to PyTorch/NVIDIA/Triton packages.
 Runtime checks validate the evaluation dependency closure, imports, tiny-model GPU inference/generation,
 and optional 4-bit operations before the real evaluation starts. Logs and an environment report are exported.
-The original `requirements.txt` is retained for reference; the notebook uses `requirements-notebook.txt`.
+The original `requirements.txt` is retained for reference. The notebook selects `requirements-notebook.txt`
+for Python 3.10–3.12 or `requirements-notebook-py313.txt` for Python 3.13. Installation uses wheels only.
+Venv creation uses `--without-pip`, then platform pip installs pip into that venv using `--python`;
+this avoids failures in Kaggle's `ensurepip` without replacing system packages.
 
 Evaluation saves atomic prediction checkpoints after each batch. Restore those files into `OUTPUT` to resume
 in a new session with identical data, settings, source and package versions. Save Kaggle outputs or download

@@ -58,7 +58,7 @@ DTYPE = 'auto'  # BF16 nếu GPU hỗ trợ, FP16 trên GPU khác.
 OUTPUT = BASE / 'output'  # Colab: có thể đổi sang thư mục Google Drive đã mount.
 OUTPUT.mkdir(parents=True, exist_ok=True)
 EXPERIMENT = 'qwen-notebook'
-ENV_DIR = Path('/tmp/sentiment-eval-venv')
+ENV_DIR = Path(f'/tmp/sentiment-eval-py{sys.version_info.major}{sys.version_info.minor}')
 PYTHON = ENV_DIR / 'bin/python'
 print('Workspace:', BASE, '\\nOutput:', OUTPUT)
 ''')
@@ -158,7 +158,8 @@ else:
 ''')
 
 files = [ROOT / name for name in ('fsa.py', 'icl_multifaced.py', 'utils.py', 'parse.py',
-         'notebook_runtime.py', 'check_notebook_environment.py', 'requirements-notebook.txt', 'model_name.json')]
+         'notebook_runtime.py', 'check_notebook_environment.py', 'requirements-notebook.txt',
+         'requirements-notebook-py313.txt', 'model_name.json')]
 files += sorted((ROOT / 'parse_utils').glob('*.py'))
 sources = {str(p.relative_to(ROOT)): p.read_text() for p in files}
 markdown('''
@@ -212,14 +213,19 @@ print('Dataset root:', DATA_DIR)
 ''')
 markdown('''
 ## Cài dependency mà không thay các gói hệ thống
-Hỗ trợ cấu hình Python 3.10–3.12; phiên bản khác sẽ dừng thay vì ép cài wheel không tương thích.
+Hỗ trợ cấu hình Python 3.10–3.13, tự chọn bộ dependency riêng cho Python 3.13.
 Cell tạo venv, khóa phiên bản PyTorch/CUDA đã có và xem kế hoạch pip trước khi cài.
+Tạo venv với `--without-pip` rồi dùng pip của nền tảng để cài pip riêng, không gọi ensurepip.
 Nếu kế hoạch định thay torch, triton hoặc các gói NVIDIA, cell sẽ dừng.
 Log đầy đủ và kế hoạch cài được lưu trong `output/`.
 ''')
 code('''
-if not (3, 10) <= sys.version_info[:2] <= (3, 12):
-    raise RuntimeError(f'Python {sys.version_info[:2]} chưa nằm trong cấu hình dependency này (3.10–3.12).')
+ENVIRONMENT_OK = False
+if not (3, 10) <= sys.version_info[:2] <= (3, 13):
+    raise RuntimeError(f'Python {sys.version_info[:2]} chưa nằm trong cấu hình dependency này (3.10–3.13).')
+REQUIREMENTS_PATH = PROJECT_DIR / ('requirements-notebook-py313.txt' if sys.version_info[:2] == (3, 13)
+                                   else 'requirements-notebook.txt')
+BNB_VERSION = '0.46.1' if sys.version_info[:2] == (3, 13) else '0.45.5'
 PROCESS_ENV = os.environ.copy()
 PROCESS_ENV.pop('PYTHONPATH', None)
 PROCESS_ENV.update(PYTHONNOUSERSITE='1', USE_TF='0', USE_FLAX='0', TOKENIZERS_PARALLELISM='false')
@@ -246,14 +252,16 @@ host = json.loads(subprocess.check_output([sys.executable, '-c', probe], env=PRO
 if not host['gpu']:
     raise RuntimeError('Chưa có CUDA GPU. Bật GPU trong Settings/Runtime rồi chạy lại.')
 (OUTPUT / 'host-environment.json').write_text(json.dumps(host, indent=2))
-subprocess.run([sys.executable, '-m', 'venv', '--system-site-packages', str(ENV_DIR)], check=True, env=PROCESS_ENV)
-run_logged([PYTHON, '-m', 'pip', 'install', 'pip==25.3'], 'pip-bootstrap.log')
+run_logged([sys.executable, '-m', 'venv', '--without-pip', '--system-site-packages', ENV_DIR],
+           'venv-create.log')
+run_logged([sys.executable, '-m', 'pip', '--python', PYTHON, 'install',
+            '--ignore-installed', '--no-deps', 'pip==25.3'], 'pip-bootstrap.log')
 constraints = BASE / 'host-torch-constraints.txt'
 constraints.write_text('\\n'.join(f'{name}=={v}' for name, v in host['constraints'].items()) + '\\n')
 install = [PYTHON, '-m', 'pip', 'install', '--upgrade', '--upgrade-strategy', 'only-if-needed',
-           '--constraint', constraints, '-r', PROJECT_DIR / 'requirements-notebook.txt']
+           '--only-binary=:all:', '--constraint', constraints, '-r', REQUIREMENTS_PATH]
 if FOUR_BIT:
-    install.append('bitsandbytes==0.45.5')
+    install.append(f'bitsandbytes=={BNB_VERSION}')
 plan = OUTPUT / 'dependency-plan.json'
 run_logged(install + ['--dry-run', '--report', plan], 'dependency-resolve.log')
 changes = [entry['metadata']['name'].lower().replace('_', '-') for entry in json.loads(plan.read_text())['install']]
@@ -275,6 +283,7 @@ Nếu bật 4-bit, thử thêm phép tính bitsandbytes trên GPU. Các kiểm t
 ''')
 code('''
 check = [PYTHON, PROJECT_DIR / 'check_notebook_environment.py', '--require-gpu',
+         '--requirements', REQUIREMENTS_PATH,
          '--report', OUTPUT / 'environment-report.json']
 if FOUR_BIT:
     check.append('--four-bit')
