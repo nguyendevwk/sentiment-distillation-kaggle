@@ -1,5 +1,7 @@
 # Targeted Distillation for Sentiment Analysis
 
+Research plan (Vietnamese): [Student dưới 1B với corpus teacher công bố](docs/research-plan-sentiment-sub1b.md).
+
 ## Kaggle / Colab notebook
 
 Upload [Sentiment_Distillation_Kaggle_Colab.ipynb](notebooks/Sentiment_Distillation_Kaggle_Colab.ipynb)
