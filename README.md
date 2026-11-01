@@ -8,6 +8,14 @@ By default, the notebook clones this private repository and uses its source and 
 In Kaggle, open **Add-ons → Secrets**, add `GITHUB_TOKEN` with a GitHub personal access token as its value,
 and enable that secret for the notebook. A fine-grained token should select this repository with
 **Contents: Read-only** permission. Set `PRIVATE_REPO` / `PRIVATE_BRANCH` in the configuration cell.
+The Kaggle branch reads the token using:
+
+```python
+from kaggle_secrets import UserSecretsClient
+user_secrets = UserSecretsClient()
+secret_value_0 = user_secrets.get_secret("GITHUB_TOKEN")
+```
+
 Alternatively, set `GITHUB_AUTH='prompt'` to enter the token in a hidden input at runtime.
 Colab supports its Secrets panel with Notebook access enabled, or the same hidden prompt.
 The token is passed only through a temporary Git subprocess environment and an askpass helper;

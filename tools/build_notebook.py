@@ -40,7 +40,6 @@ BASE.mkdir(parents=True, exist_ok=True)
 USE_PRIVATE_REPO = True
 PRIVATE_REPO = 'nguyendevwk/sentiment-distillation-kaggle'
 PRIVATE_BRANCH = 'main'
-GITHUB_SECRET_NAME = 'GITHUB_TOKEN'
 GITHUB_AUTH = 'secrets'  # 'secrets': Kaggle/Colab Secrets; 'prompt': ô nhập token ẩn khi chạy.
 PROJECT_DIR = BASE / 'private-source' if USE_PRIVATE_REPO else BASE
 MODEL = 'zhang-yice/Qwen2.5-1.5B-sentiment-distillation-v1'
@@ -68,7 +67,7 @@ markdown('''
 ## GitHub token để clone repo private
 
 **Kaggle:** mở **Add-ons → Secrets**, thêm secret tên `GITHUB_TOKEN`, dán GitHub Personal Access Token
-vào **Value** và bật quyền sử dụng secret cho notebook. Tên secret phải khớp `GITHUB_SECRET_NAME` phía trên.
+vào **Value** và bật quyền sử dụng secret cho notebook. Tên secret phải đúng là `GITHUB_TOKEN`.
 Token fine-grained chỉ cần chọn repo này và cấp **Contents: Read-only** (Metadata đi kèm).
 [Tạo token](https://github.com/settings/personal-access-tokens/new).
 
@@ -93,10 +92,13 @@ def clone_private_source():
         try:
             if Path('/kaggle').exists():
                 from kaggle_secrets import UserSecretsClient
-                token = UserSecretsClient().get_secret(GITHUB_SECRET_NAME).strip()
+                user_secrets = UserSecretsClient()
+                secret_value_0 = user_secrets.get_secret("GITHUB_TOKEN")
+                token = secret_value_0.strip()
+                del secret_value_0
             else:
                 from google.colab import userdata
-                token = (userdata.get(GITHUB_SECRET_NAME) or '').strip()
+                token = (userdata.get("GITHUB_TOKEN") or '').strip()
         except Exception:
             raise RuntimeError('Không đọc được secret. Thêm GITHUB_TOKEN vào Secrets và cấp quyền cho notebook, '
                                "hoặc đặt GITHUB_AUTH='prompt'.") from None
