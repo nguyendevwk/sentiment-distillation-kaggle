@@ -1,4 +1,4 @@
-"""Build a standalone notebook containing the patched evaluator (no private GitHub token needed)."""
+"""Build a notebook with bundled source and optional authenticated private clone."""
 import json
 from pathlib import Path
 import textwrap
@@ -16,9 +16,9 @@ def code(text):
 markdown('''
 # Sentiment Distillation — Kaggle / Colab
 
-Notebook độc lập: chứa source đánh giá đã chỉnh sửa; chỉ tải **dữ liệu** từ commit công khai của tác giả.
+Notebook hỗ trợ clone repo private bằng GitHub token hoặc sử dụng source đã đóng gói.
 Upload duy nhất file `.ipynb` này lên Kaggle, bật **GPU** và **Internet**, chạy lần lượt các cell.
-Colab: chọn runtime GPU. Không cần token GitHub của repo private.
+Colab: chọn runtime GPU. Đặt `USE_PRIVATE_REPO=False` nếu muốn dùng bản đóng gói, không cần GitHub token.
 
 Mặc định: Qwen 1.5B, SST2, 32 mẫu đầu, batch 1, 4-shot, 2.048 token đầu vào.
 Đây là chạy thử, không phải kết quả toàn benchmark. Không có huấn luyện/fine-tuning trong notebook.
@@ -37,6 +37,12 @@ BASE = Path('/kaggle/working/sentiment-distillation' if Path('/kaggle').exists()
             else '/content/sentiment-distillation' if Path('/content').exists()
             else './sentiment-notebook-run').resolve()
 BASE.mkdir(parents=True, exist_ok=True)
+USE_PRIVATE_REPO = True
+PRIVATE_REPO = 'nguyendevwk/sentiment-distillation-kaggle'
+PRIVATE_BRANCH = 'main'
+GITHUB_SECRET_NAME = 'GITHUB_TOKEN'
+GITHUB_AUTH = 'secrets'  # 'secrets': Kaggle/Colab Secrets; 'prompt': ô nhập token ẩn khi chạy.
+PROJECT_DIR = BASE / 'private-source' if USE_PRIVATE_REPO else BASE
 MODEL = 'zhang-yice/Qwen2.5-1.5B-sentiment-distillation-v1'
 # MODEL cũng nhận thư mục model đã attach, ví dụ /kaggle/input/.../model
 DATA_DIR = None  # Hoặc đường dẫn chứa sc/, multifaced/, absa/ trong Kaggle Input.
@@ -58,21 +64,114 @@ PYTHON = ENV_DIR / 'bin/python'
 print('Workspace:', BASE, '\\nOutput:', OUTPUT)
 ''')
 
+markdown('''
+## GitHub token để clone repo private
+
+**Kaggle:** mở **Add-ons → Secrets**, thêm secret tên `GITHUB_TOKEN`, dán GitHub Personal Access Token
+vào **Value** và bật quyền sử dụng secret cho notebook. Tên secret phải khớp `GITHUB_SECRET_NAME` phía trên.
+Token fine-grained chỉ cần chọn repo này và cấp **Contents: Read-only** (Metadata đi kèm).
+[Tạo token](https://github.com/settings/personal-access-tokens/new).
+
+Hoặc đặt `GITHUB_AUTH='prompt'`: khi chạy sẽ hiện ô nhập token ẩn. Không dán token vào code/config.
+Colab có thể dùng Secrets cùng tên (cấp Notebook access), hoặc chọn `prompt`.
+
+Cell clone vào `private-source/`; chạy lại sẽ fetch và cập nhật nhánh bằng fast-forward.
+Nếu checkout có file đã sửa, cell dừng để tránh ghi đè. Token chỉ truyền tạm cho tiến trình Git,
+không lưu vào URL remote, file credentials, notebook output hoặc log.
+Chọn `USE_PRIVATE_REPO=False` để bỏ qua cell này và dùng source đóng gói.
+''')
+code(r'''
+def clone_private_source():
+    import getpass, re, tempfile
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', PRIVATE_REPO):
+        raise ValueError('PRIVATE_REPO phải có dạng owner/repo, không chứa token hoặc URL.')
+    if not PRIVATE_BRANCH or PRIVATE_BRANCH.startswith('-'):
+        raise ValueError('PRIVATE_BRANCH không hợp lệ.')
+    if GITHUB_AUTH == 'prompt':
+        token = getpass.getpass('GitHub token (ẩn, không lưu vào notebook): ').strip()
+    elif GITHUB_AUTH == 'secrets':
+        try:
+            if Path('/kaggle').exists():
+                from kaggle_secrets import UserSecretsClient
+                token = UserSecretsClient().get_secret(GITHUB_SECRET_NAME).strip()
+            else:
+                from google.colab import userdata
+                token = (userdata.get(GITHUB_SECRET_NAME) or '').strip()
+        except Exception:
+            raise RuntimeError('Không đọc được secret. Thêm GITHUB_TOKEN vào Secrets và cấp quyền cho notebook, '
+                               "hoặc đặt GITHUB_AUTH='prompt'.") from None
+    else:
+        raise ValueError("GITHUB_AUTH chỉ nhận 'secrets' hoặc 'prompt'.")
+    if not token:
+        raise ValueError('GitHub token trống.')
+    url = f'https://github.com/{PRIVATE_REPO}.git'
+    git_env = os.environ.copy()
+    git_env.update(PRIVATE_CLONE_TOKEN=token, GIT_TERMINAL_PROMPT='0',
+                   GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull)
+    # Helper contains no token; the token exists only in the Git subprocess environment.
+    with tempfile.TemporaryDirectory(prefix='sentiment-git-auth-') as auth_dir:
+        askpass = Path(auth_dir) / 'askpass.sh'
+        askpass.write_text(r"""#!/bin/sh
+case "$1" in
+  *Username*) printf '%s\n' 'x-access-token' ;;
+  *) printf '%s\n' "$PRIVATE_CLONE_TOKEN" ;;
+esac
+""", encoding='utf-8')
+        askpass.chmod(0o700)
+        git_env['GIT_ASKPASS'] = str(askpass)
+
+        def git(arguments, cwd=None):
+            result = subprocess.run(['git', '-c', 'credential.helper=', *arguments], cwd=cwd,
+                                    env=git_env, capture_output=True, text=True)
+            if result.returncode:
+                # No raw stderr/exception: authentication errors must never reveal credentials.
+                raise RuntimeError('Git thất bại (không in chi tiết xác thực). Kiểm tra Internet, repo/branch, '
+                                   'token còn hạn và quyền Contents: Read-only; checkout phải sạch.') from None
+            return result.stdout.strip()
+
+        if (PROJECT_DIR / '.git').is_dir():
+            if git(['remote', 'get-url', 'origin'], PROJECT_DIR) != url:
+                raise RuntimeError('Checkout hiện tại thuộc repo khác. Chọn workspace khác.')
+            if git(['status', '--porcelain'], PROJECT_DIR):
+                raise RuntimeError('Checkout có thay đổi cục bộ. Lưu thay đổi hoặc chọn workspace khác trước khi cập nhật.')
+            if git(['branch', '--show-current'], PROJECT_DIR) != PRIVATE_BRANCH:
+                raise RuntimeError('Checkout đang ở nhánh khác. Đổi PRIVATE_BRANCH hoặc chọn workspace khác.')
+            shallow = git(['rev-parse', '--is-shallow-repository'], PROJECT_DIR) == 'true'
+            git(['fetch', *(['--unshallow'] if shallow else []), 'origin', PRIVATE_BRANCH], PROJECT_DIR)
+            git(['merge', '--ff-only', 'FETCH_HEAD'], PROJECT_DIR)
+        else:
+            if PROJECT_DIR.exists() and any(PROJECT_DIR.iterdir()):
+                raise RuntimeError('Thư mục clone đã tồn tại và không rỗng. Chọn workspace khác.')
+            git(['clone', '--depth', '1', '--branch', PRIVATE_BRANCH, '--single-branch', url, str(PROJECT_DIR)])
+        commit = git(['rev-parse', 'HEAD'], PROJECT_DIR)
+    git_env.pop('PRIVATE_CLONE_TOKEN', None)
+    token = None
+    return commit
+
+if USE_PRIVATE_REPO:
+    source_commit = clone_private_source()
+    print('Private source ready:', PRIVATE_REPO, 'commit', source_commit)
+else:
+    print('Using bundled source; GitHub token not needed.')
+''')
+
 files = [ROOT / name for name in ('fsa.py', 'icl_multifaced.py', 'utils.py', 'parse.py',
          'notebook_runtime.py', 'check_notebook_environment.py', 'requirements-notebook.txt', 'model_name.json')]
 files += sorted((ROOT / 'parse_utils').glob('*.py'))
 sources = {str(p.relative_to(ROOT)): p.read_text() for p in files}
 markdown('''
 ## Source đi kèm
-Cell sau ghi source đã chỉnh sửa vào workspace. Không clone/chạy source mới từ nhánh upstream.
+Cell sau chỉ ghi source đóng gói khi `USE_PRIVATE_REPO=False`; không ghi đè source clone từ repo private.
 Các nội dung file được đóng gói trực tiếp bên dưới để notebook hoạt động độc lập.
 ''')
 code('PATCHED_SOURCES = ' + repr(sources) + '''
 for relative, content in PATCHED_SOURCES.items():
+    if USE_PRIVATE_REPO:
+        break
     destination = BASE / relative
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(content, encoding='utf-8')
-print('Materialized', len(PATCHED_SOURCES), 'source/config files')
+print('Source:', PROJECT_DIR)
 ''')
 markdown('''
 ## Dữ liệu benchmark
@@ -83,9 +182,9 @@ code('''
 import urllib.request, zipfile
 UPSTREAM_COMMIT = '2810fc2826e8f7c2ae6a0d6dd328ab7d8979744a'
 if DATA_DIR is None:
-    DATA_DIR = BASE / 'datasets'
+    DATA_DIR = PROJECT_DIR / 'datasets'
     marker = DATA_DIR / '.source-commit'
-    if not marker.exists() or marker.read_text() != UPSTREAM_COMMIT:
+    if not USE_PRIVATE_REPO and (not marker.exists() or marker.read_text() != UPSTREAM_COMMIT):
         archive = BASE / 'upstream-data.zip'
         url = f'https://codeload.github.com/HITSZ-HLT/Sentiment-Distillation/zip/{UPSTREAM_COMMIT}'
         urllib.request.urlretrieve(url, archive)
@@ -94,7 +193,7 @@ if DATA_DIR is None:
                 parts = Path(item.filename).parts
                 if len(parts) < 3 or parts[1] != 'datasets' or item.is_dir():
                     continue
-                destination = (BASE / Path(*parts[1:])).resolve()
+                destination = (PROJECT_DIR / Path(*parts[1:])).resolve()
                 if not destination.is_relative_to(DATA_DIR.resolve()):
                     raise ValueError('Unsafe archive path')
                 destination.parent.mkdir(parents=True, exist_ok=True)
@@ -123,7 +222,7 @@ PROCESS_ENV = os.environ.copy()
 PROCESS_ENV.pop('PYTHONPATH', None)
 PROCESS_ENV.update(PYTHONNOUSERSITE='1', USE_TF='0', USE_FLAX='0', TOKENIZERS_PARALLELISM='false')
 
-def run_logged(command, filename, cwd=BASE):
+def run_logged(command, filename, cwd=PROJECT_DIR):
     log = OUTPUT / filename
     print('Running:', ' '.join(map(str, command[:5])), '... ->', log.name, flush=True)
     with log.open('w') as stream:
@@ -150,7 +249,7 @@ run_logged([PYTHON, '-m', 'pip', 'install', 'pip==25.3'], 'pip-bootstrap.log')
 constraints = BASE / 'host-torch-constraints.txt'
 constraints.write_text('\\n'.join(f'{name}=={v}' for name, v in host['constraints'].items()) + '\\n')
 install = [PYTHON, '-m', 'pip', 'install', '--upgrade', '--upgrade-strategy', 'only-if-needed',
-           '--constraint', constraints, '-r', BASE / 'requirements-notebook.txt']
+           '--constraint', constraints, '-r', PROJECT_DIR / 'requirements-notebook.txt']
 if FOUR_BIT:
     install.append('bitsandbytes==0.45.5')
 plan = OUTPUT / 'dependency-plan.json'
@@ -173,7 +272,7 @@ Sau đó import thư viện, tạo model nhỏ ngẫu nhiên không cần tải 
 Nếu bật 4-bit, thử thêm phép tính bitsandbytes trên GPU. Các kiểm tra này chưa đảm bảo model thật sẽ đủ VRAM.
 ''')
 code('''
-check = [PYTHON, BASE / 'check_notebook_environment.py', '--require-gpu',
+check = [PYTHON, PROJECT_DIR / 'check_notebook_environment.py', '--require-gpu',
          '--report', OUTPUT / 'environment-report.json']
 if FOUR_BIT:
     check.append('--four-bit')
@@ -204,7 +303,7 @@ for dataset in DATASETS:
         key = hashlib.sha256(json.dumps(configuration, sort_keys=True).encode()).hexdigest()[:12]
         slug = dataset.replace('/', '-') + f'-seed{seed}-{key}'
         script = 'fsa.py' if dataset.startswith('absa/') else 'icl_multifaced.py'
-        command = [PYTHON, BASE / script, '--dataset', dataset, '--subname', EXPERIMENT,
+        command = [PYTHON, PROJECT_DIR / script, '--dataset', dataset, '--subname', EXPERIMENT,
                    '--seed', str(seed), '--model_name_or_path', MODEL,
                    '--data_dir', DATA_DIR, '--output_dir', OUTPUT,
                    '--eval_batch_size', str(BATCH_SIZE), '--k_shot', str(K_SHOT),
@@ -226,8 +325,8 @@ Colab: tải ZIP hoặc đổi OUTPUT sang Google Drive đã mount. Dữ liệu 
 Không đặt venv/model cache trong file kết quả xuất ra.
 ''')
 code('''
-summary = subprocess.run([str(PYTHON), str(BASE / 'parse.py'), '--path', str(OUTPUT / 'result.txt')],
-                         check=True, env=PROCESS_ENV, cwd=BASE, capture_output=True, text=True)
+summary = subprocess.run([str(PYTHON), str(PROJECT_DIR / 'parse.py'), '--path', str(OUTPUT / 'result.txt')],
+                         check=True, env=PROCESS_ENV, cwd=PROJECT_DIR, capture_output=True, text=True)
 print(summary.stdout)
 (OUTPUT / 'summary.txt').write_text(summary.stdout)
 print('All benchmark datasets:', [

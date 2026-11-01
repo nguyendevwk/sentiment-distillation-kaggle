@@ -4,8 +4,18 @@
 
 Upload [Sentiment_Distillation_Kaggle_Colab.ipynb](notebooks/Sentiment_Distillation_Kaggle_Colab.ipynb)
 to Kaggle (GPU + Internet enabled) or Colab (GPU runtime), then run cells in order.
-The notebook bundles the patched evaluation source and downloads benchmark data from a fixed upstream commit.
-It does not need access to this private repository, and it does not implement fine-tuning.
+By default, the notebook clones this private repository and uses its source and datasets.
+In Kaggle, open **Add-ons → Secrets**, add `GITHUB_TOKEN` with a GitHub personal access token as its value,
+and enable that secret for the notebook. A fine-grained token should select this repository with
+**Contents: Read-only** permission. Set `PRIVATE_REPO` / `PRIVATE_BRANCH` in the configuration cell.
+Alternatively, set `GITHUB_AUTH='prompt'` to enter the token in a hidden input at runtime.
+Colab supports its Secrets panel with Notebook access enabled, or the same hidden prompt.
+The token is passed only through a temporary Git subprocess environment and an askpass helper;
+it is not stored in the remote URL, source, credentials files or logs. Re-running the clone cell updates
+a clean checkout using fast-forward only; local changes cause it to stop.
+
+Set `USE_PRIVATE_REPO=False` to use bundled evaluation source without GitHub access; in that mode
+benchmark data is downloaded from a fixed public upstream commit. The notebook does not implement fine-tuning.
 
 Notebook defaults: Qwen 1.5B, SST2, first 32 test examples, batch size 1, four demonstrations,
 2,048 input tokens. Set `MAX_SAMPLES=0` for a full dataset. This smoke configuration is not a full SentiBench score.
