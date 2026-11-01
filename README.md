@@ -25,18 +25,42 @@ a clean checkout using fast-forward only; local changes cause it to stop.
 Set `USE_PRIVATE_REPO=False` to use bundled evaluation source without GitHub access; in that mode
 benchmark data is downloaded from a fixed public upstream commit. The notebook does not implement fine-tuning.
 
-Notebook defaults: Qwen 1.5B, SST2, first 32 test examples, batch size 1, four demonstrations,
+Notebook defaults: Qwen 0.5B, SST2, first 5 test examples, batch size 1, four demonstrations,
 2,048 input tokens. Set `MAX_SAMPLES=0` for a full dataset. This smoke configuration is not a full SentiBench score.
 
-The notebook creates a separate venv that can access platform packages to reuse the existing CUDA-enabled
-PyTorch. Project packages are installed into that venv, and all evaluators run in its subprocesses.
-This is partial isolation, not a container. A pip dry-run blocks changes to PyTorch/NVIDIA/Triton packages.
-Runtime checks validate the evaluation dependency closure, imports, tiny-model GPU inference/generation,
-and optional 4-bit operations before the real evaluation starts. Logs and an environment report are exported.
-The original `requirements.txt` is retained for reference. The notebook selects `requirements-notebook.txt`
-for Python 3.10–3.12 or `requirements-notebook-py313.txt` for Python 3.13. Installation uses wheels only.
-Venv creation uses `--without-pip`, then platform pip installs pip into that venv using `--python`;
-this avoids failures in Kaggle's `ensurepip` without replacing system packages.
+The default `ENV_MODE='platform'` uses the platform's existing Python and libraries directly.
+It does not install/upgrade packages, create a venv, enforce pinned versions, or run synthetic model tests.
+It reports package availability, versions and GPU information. Missing packages stop the run with an
+explanation; they are not installed automatically. Real model execution can still reveal incompatibilities.
+
+Optional `ENV_MODE='venv'` uses a separate venv with access to platform packages to reuse existing
+CUDA-enabled PyTorch. A pip dry-run blocks changes to PyTorch/NVIDIA/Triton packages. This mode checks
+the evaluation dependency closure, imports, tiny-model inference/generation and optional 4-bit operations.
+It selects `requirements-notebook.txt` for Python 3.10–3.12 or `requirements-notebook-py313.txt` for Python 3.13.
+Installation uses wheels only, with `--without-pip` and platform pip's `--python` to avoid ensurepip.
+
+For a repository already cloned at `/content/sentiment-distillation-kaggle`, this Colab cell runs
+five SST2 examples using existing packages (no requirements installation):
+
+```python
+import subprocess
+import sys
+
+subprocess.run([
+    sys.executable, '/content/sentiment-distillation-kaggle/icl_multifaced.py',
+    '--dataset', 'sc/sst2', '--subname', 'sst2', '--seed', '42',
+    '--max_samples', '5', '--eval_batch_size', '1',
+    '--model_name_or_path', 'Qwen/Qwen2.5-0.5B-Instruct',
+    '--data_dir', '/content/sentiment-distillation-kaggle/datasets',
+    '--output_dir', '/content/sentiment-distillation-kaggle/output',
+], check=True)
+```
+
+`--data_dir` is the root containing `sc/`, `multifaced/`, and `absa/`; `--dataset` is a relative
+task key such as `sc/sst2`. The script reads `test.json` and `train.json` (or `val.json` with
+`--demo_split val`), not `demo.json`. Metrics are appended to `output/result.txt`, and detailed
+predictions are stored in JSON files under `output/`. The explicit output path above is independent
+of the notebook's current working directory.
 
 Evaluation saves atomic prediction checkpoints after each batch. Restore those files into `OUTPUT` to resume
 in a new session with identical data, settings, source and package versions. Save Kaggle outputs or download

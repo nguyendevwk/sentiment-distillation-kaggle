@@ -20,14 +20,14 @@ Notebook hỗ trợ clone repo private bằng GitHub token hoặc sử dụng so
 Upload duy nhất file `.ipynb` này lên Kaggle, bật **GPU** và **Internet**, chạy lần lượt các cell.
 Colab: chọn runtime GPU. Đặt `USE_PRIVATE_REPO=False` nếu muốn dùng bản đóng gói, không cần GitHub token.
 
-Mặc định: Qwen 1.5B, SST2, 32 mẫu đầu, batch 1, 4-shot, 2.048 token đầu vào.
+Mặc định: Qwen 0.5B, SST2, 5 mẫu đầu, batch 1, 4-shot, 2.048 token đầu vào.
 Đây là chạy thử, không phải kết quả toàn benchmark. Không có huấn luyện/fine-tuning trong notebook.
 
-Môi trường riêng dùng `--system-site-packages` để tái sử dụng PyTorch/CUDA của nền tảng.
-Các gói dự án được cài trong venv; các chương trình đánh giá chạy bằng Python của venv,
-không dùng kernel để import các thư viện đã thay phiên bản. Đây là cách ly một phần, không phải container.
-Có kiểm tra kế hoạch pip, dependency đang dùng, import, tiny-model forward/generation và GPU.
-Nếu không đạt, notebook dừng. Chưa được chạy thực tế trên Kaggle; kiểm tra sẽ thực hiện trong phiên của bạn.
+Mặc định dùng trực tiếp thư viện có sẵn của nền tảng (`ENV_MODE='platform'`).
+Không cài dependency, không tạo venv và không ép phiên bản Python/thư viện trong chế độ này.
+Chỉ ghi lại phiên bản, kiểm tra gói cần thiết có tồn tại và thông tin GPU; không chạy kiểm tra model giả lập.
+Nếu muốn dùng bộ phiên bản cố định trong venv, đổi `ENV_MODE='venv'`.
+Notebook chưa được chạy thực tế trên Kaggle/Colab; thư viện nền tảng vẫn có thể phát sinh lỗi khi chạy model thật.
 ''')
 code('''
 from pathlib import Path
@@ -42,12 +42,13 @@ PRIVATE_REPO = 'nguyendevwk/sentiment-distillation-kaggle'
 PRIVATE_BRANCH = 'main'
 GITHUB_AUTH = 'secrets'  # 'secrets': Kaggle/Colab Secrets; 'prompt': ô nhập token ẩn khi chạy.
 PROJECT_DIR = BASE / 'private-source' if USE_PRIVATE_REPO else BASE
-MODEL = 'zhang-yice/Qwen2.5-1.5B-sentiment-distillation-v1'
+MODEL = 'Qwen/Qwen2.5-0.5B-Instruct'
+ENV_MODE = 'platform'  # 'platform': dùng gói có sẵn; 'venv': cài bộ dependency cố định.
 # MODEL cũng nhận thư mục model đã attach, ví dụ /kaggle/input/.../model
 DATA_DIR = None  # Hoặc đường dẫn chứa sc/, multifaced/, absa/ trong Kaggle Input.
 DATASETS = ['sc/sst2']
 SEEDS = [42]
-MAX_SAMPLES = 32  # 0 = toàn bộ test. Giữ nguyên cấu hình khi tiếp tục checkpoint.
+MAX_SAMPLES = 5  # 0 = toàn bộ test. Giữ nguyên cấu hình khi tiếp tục checkpoint.
 BATCH_SIZE = 1
 K_SHOT = 4
 MAX_INPUT_TOKENS = 2048
@@ -212,23 +213,16 @@ for dataset in DATASETS:
 print('Dataset root:', DATA_DIR)
 ''')
 markdown('''
-## Cài dependency mà không thay các gói hệ thống
-Hỗ trợ cấu hình Python 3.10–3.13, tự chọn bộ dependency riêng cho Python 3.13.
-Cell tạo venv, khóa phiên bản PyTorch/CUDA đã có và xem kế hoạch pip trước khi cài.
-Tạo venv với `--without-pip` rồi dùng pip của nền tảng để cài pip riêng, không gọi ensurepip.
-Nếu kế hoạch định thay torch, triton hoặc các gói NVIDIA, cell sẽ dừng.
-Log đầy đủ và kế hoạch cài được lưu trong `output/`.
+## Chọn môi trường chạy
+Mặc định `platform`: dùng Python và các gói sẵn có, không gọi pip/venv/ensurepip, không ép phiên bản.
+Tùy chọn `venv`: bộ dependency riêng cho Python 3.10–3.13, giữ PyTorch/CUDA hệ thống.
+Ở chế độ venv, cài wheel, xem kế hoạch pip trước khi cài và dừng nếu định thay PyTorch/CUDA.
 ''')
 code('''
 ENVIRONMENT_OK = False
-if not (3, 10) <= sys.version_info[:2] <= (3, 13):
-    raise RuntimeError(f'Python {sys.version_info[:2]} chưa nằm trong cấu hình dependency này (3.10–3.13).')
-REQUIREMENTS_PATH = PROJECT_DIR / ('requirements-notebook-py313.txt' if sys.version_info[:2] == (3, 13)
-                                   else 'requirements-notebook.txt')
-BNB_VERSION = '0.46.1' if sys.version_info[:2] == (3, 13) else '0.45.5'
 PROCESS_ENV = os.environ.copy()
 PROCESS_ENV.pop('PYTHONPATH', None)
-PROCESS_ENV.update(PYTHONNOUSERSITE='1', USE_TF='0', USE_FLAX='0', TOKENIZERS_PARALLELISM='false')
+PROCESS_ENV.update(USE_TF='0', USE_FLAX='0', TOKENIZERS_PARALLELISM='false')
 
 def run_logged(command, filename, cwd=PROJECT_DIR):
     log = OUTPUT / filename
@@ -248,54 +242,70 @@ core = {d.metadata['Name']: d.version for d in md.distributions()
 print(json.dumps(dict(torch=torch.__version__, torch_file=torch.__file__, cuda=torch.version.cuda,
                      gpu=torch.cuda.is_available(), constraints=core)))
 """
-host = json.loads(subprocess.check_output([sys.executable, '-c', probe], env=PROCESS_ENV, text=True))
-if not host['gpu']:
-    raise RuntimeError('Chưa có CUDA GPU. Bật GPU trong Settings/Runtime rồi chạy lại.')
-(OUTPUT / 'host-environment.json').write_text(json.dumps(host, indent=2))
-run_logged([sys.executable, '-m', 'venv', '--without-pip', '--system-site-packages', ENV_DIR],
-           'venv-create.log')
-run_logged([sys.executable, '-m', 'pip', '--python', PYTHON, 'install',
-            '--ignore-installed', '--no-deps', 'pip==25.3'], 'pip-bootstrap.log')
-constraints = BASE / 'host-torch-constraints.txt'
-constraints.write_text('\\n'.join(f'{name}=={v}' for name, v in host['constraints'].items()) + '\\n')
-install = [PYTHON, '-m', 'pip', 'install', '--upgrade', '--upgrade-strategy', 'only-if-needed',
-           '--only-binary=:all:', '--constraint', constraints, '-r', REQUIREMENTS_PATH]
-if FOUR_BIT:
-    install.append(f'bitsandbytes=={BNB_VERSION}')
-plan = OUTPUT / 'dependency-plan.json'
-run_logged(install + ['--dry-run', '--report', plan], 'dependency-resolve.log')
-changes = [entry['metadata']['name'].lower().replace('_', '-') for entry in json.loads(plan.read_text())['install']]
-blocked = [name for name in changes if name in ('torch', 'triton') or name.startswith('nvidia-')]
-if blocked:
-    raise RuntimeError(f'Kế hoạch cài định thay CUDA/PyTorch: {blocked}. Dừng để giữ môi trường nền tảng.')
-print('Project packages to install:', changes)
-run_logged(install, 'dependency-install.log')
-inside = json.loads(subprocess.check_output([str(PYTHON), '-c', probe], env=PROCESS_ENV, text=True))
-if inside['torch'] != host['torch'] or inside['torch_file'] != host['torch_file']:
-    raise RuntimeError('PyTorch trong venv khác bản hệ thống; dừng để kiểm tra.')
-print('Dependencies installed in venv; host torch/CUDA retained:', inside['torch'], inside['cuda'])
+if ENV_MODE == 'platform':
+    PYTHON = Path(sys.executable)
+    print('Platform mode: using', PYTHON, '; no installation or strict version checks.')
+elif ENV_MODE == 'venv':
+    PYTHON = ENV_DIR / 'bin/python'
+    if not (3, 10) <= sys.version_info[:2] <= (3, 13):
+        raise RuntimeError(f'Python {sys.version_info[:2]} chưa nằm trong cấu hình dependency này (3.10–3.13).')
+    REQUIREMENTS_PATH = PROJECT_DIR / ('requirements-notebook-py313.txt' if sys.version_info[:2] == (3, 13)
+                                       else 'requirements-notebook.txt')
+    BNB_VERSION = '0.46.1' if sys.version_info[:2] == (3, 13) else '0.45.5'
+    PROCESS_ENV['PYTHONNOUSERSITE'] = '1'
+    host = json.loads(subprocess.check_output([sys.executable, '-c', probe], env=PROCESS_ENV, text=True))
+    if not host['gpu']:
+        raise RuntimeError('Chưa có CUDA GPU. Bật GPU trong Settings/Runtime rồi chạy lại.')
+    (OUTPUT / 'host-environment.json').write_text(json.dumps(host, indent=2))
+    run_logged([sys.executable, '-m', 'venv', '--without-pip', '--system-site-packages', ENV_DIR],
+               'venv-create.log')
+    run_logged([sys.executable, '-m', 'pip', '--python', PYTHON, 'install',
+                '--ignore-installed', '--no-deps', 'pip==25.3'], 'pip-bootstrap.log')
+    constraints = BASE / 'host-torch-constraints.txt'
+    constraints.write_text('\\n'.join(f'{name}=={v}' for name, v in host['constraints'].items()) + '\\n')
+    install = [PYTHON, '-m', 'pip', 'install', '--upgrade', '--upgrade-strategy', 'only-if-needed',
+               '--only-binary=:all:', '--constraint', constraints, '-r', REQUIREMENTS_PATH]
+    if FOUR_BIT:
+        install.append(f'bitsandbytes=={BNB_VERSION}')
+    plan = OUTPUT / 'dependency-plan.json'
+    run_logged(install + ['--dry-run', '--report', plan], 'dependency-resolve.log')
+    changes = [entry['metadata']['name'].lower().replace('_', '-') for entry in json.loads(plan.read_text())['install']]
+    blocked = [name for name in changes if name in ('torch', 'triton') or name.startswith('nvidia-')]
+    if blocked:
+        raise RuntimeError(f'Kế hoạch cài định thay CUDA/PyTorch: {blocked}. Dừng để giữ môi trường nền tảng.')
+    print('Project packages to install:', changes)
+    run_logged(install, 'dependency-install.log')
+    inside = json.loads(subprocess.check_output([str(PYTHON), '-c', probe], env=PROCESS_ENV, text=True))
+    if inside['torch'] != host['torch'] or inside['torch_file'] != host['torch_file']:
+        raise RuntimeError('PyTorch trong venv khác bản hệ thống; dừng để kiểm tra.')
+    print('Dependencies installed in venv; host torch/CUDA retained:', inside['torch'], inside['cuda'])
+else:
+    raise ValueError("ENV_MODE phải là 'platform' hoặc 'venv'.")
 ''')
 markdown('''
-## Kiểm tra môi trường thực tế
-Kiểm tra dependency của những gói evaluator sử dụng, thay vì yêu cầu toàn bộ ứng dụng cài sẵn trên Kaggle tương thích.
-Sau đó import thư viện, tạo model nhỏ ngẫu nhiên không cần tải weights và thử forward/generate trên GPU.
-Nếu bật 4-bit, thử thêm phép tính bitsandbytes trên GPU. Các kiểm tra này chưa đảm bảo model thật sẽ đủ VRAM.
+## Thông tin môi trường
+`platform`: ghi phiên bản/gói thiếu và GPU; bỏ kiểm tra pin và model giả lập. Không tự cài gói thiếu.
+`venv`: kiểm tra dependency đầy đủ, import và thử model nhỏ; nếu bật 4-bit, thử bitsandbytes.
+Kết quả kiểm tra không đảm bảo model thật đủ VRAM hoặc mọi API tương thích.
 ''')
 code('''
-check = [PYTHON, PROJECT_DIR / 'check_notebook_environment.py', '--require-gpu',
-         '--requirements', REQUIREMENTS_PATH,
+check = [PYTHON, PROJECT_DIR / 'check_notebook_environment.py',
          '--report', OUTPUT / 'environment-report.json']
+if ENV_MODE == 'platform':
+    check.append('--platform')
+else:
+    check.extend(['--require-gpu', '--requirements', REQUIREMENTS_PATH])
 if FOUR_BIT:
     check.append('--four-bit')
 log = run_logged(check, 'environment-check.log')
 print(log.read_text()[-10000:])
-# Ghi lại dependency hiệu lực để chẩn đoán/tái lập môi trường.
-run_logged([PYTHON, '-m', 'pip', 'freeze'], 'effective-packages.txt')
+if ENV_MODE == 'venv':
+    run_logged([PYTHON, '-m', 'pip', 'freeze'], 'effective-packages.txt')
 ENVIRONMENT_OK = True
 ''')
 markdown('''
 ## Chạy đánh giá / tiếp tục tiến độ
-Mặc định chạy thử 32 mẫu SST2. Đổi `MAX_SAMPLES=0` để chạy đầy đủ một dataset.
+Mặc định chạy thử 5 mẫu SST2 với Qwen 0.5B. Đổi `MAX_SAMPLES=0` để chạy đầy đủ một dataset.
 Để chạy 12 dataset, dùng danh sách ở cell kết quả; nên chia theo dataset và seed để phù hợp thời lượng phiên.
 Checkpoint lưu sau từng batch. Chạy lại cùng cấu hình sẽ dùng các dự đoán đã có; cấu hình/data/môi trường khác sẽ bị từ chối.
 

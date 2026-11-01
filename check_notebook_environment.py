@@ -1,16 +1,45 @@
 """Validate the evaluator's dependency closure without importing unrelated host apps."""
 import argparse
 import importlib
+import importlib.util
 from importlib.metadata import PackageNotFoundError, distribution, version
 import json
 from pathlib import Path
 import platform
 import sys
 
-from packaging.requirements import Requirement
+def inspect_platform(four_bit=False):
+    """Report platform packages without enforcing pins or running a synthetic model."""
+    modules = {'torch': 'torch', 'transformers': 'transformers', 'accelerate': 'accelerate',
+               'numpy': 'numpy', 'scipy': 'scipy', 'scikit-learn': 'sklearn',
+               'nltk': 'nltk', 'tqdm': 'tqdm'}
+    if four_bit:
+        modules['bitsandbytes'] = 'bitsandbytes'
+    missing = [package for package, module in modules.items()
+               if importlib.util.find_spec(module) is None]
+    if missing:
+        raise RuntimeError('Missing packages: ' + ', '.join(missing) +
+                           '. Platform mode does not install or upgrade packages automatically.')
+    import torch
+    packages = {}
+    for package in modules:
+        try:
+            packages[package] = version(package)
+        except PackageNotFoundError:
+            packages[package] = None
+    report = dict(python=sys.version, executable=sys.executable, platform=platform.platform(),
+                  mode='platform', packages=packages, cuda_build=torch.version.cuda,
+                  gpu=torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+                  strict_dependency_check='skipped', tiny_model_test='skipped',
+                  four_bit_requested=four_bit)
+    print(json.dumps(report, indent=2))
+    if not torch.cuda.is_available():
+        print('No CUDA GPU: evaluation will use CPU, which can be slow.')
+    return report
 
 
 def check(requirements_path, four_bit=False, require_gpu=False):
+    from packaging.requirements import Requirement
     requirements = [Requirement(line.strip()) for line in Path(requirements_path).read_text().splitlines()
                     if line.strip() and not line.lstrip().startswith('#')]
     requirements.extend([Requirement('torch>=2.2,<3'), Requirement('packaging>=23')])
@@ -82,8 +111,9 @@ if __name__ == '__main__':
     profile = 'requirements-notebook-py313.txt' if sys.version_info[:2] >= (3, 13) else 'requirements-notebook.txt'
     parser.add_argument('--requirements', default=str(Path(__file__).with_name(profile)))
     parser.add_argument('--four-bit', action='store_true')
+    parser.add_argument('--platform', action='store_true', help='Inspect existing packages without enforcing pins or testing a model')
     parser.add_argument('--require-gpu', action='store_true')
     parser.add_argument('--report', default='environment-report.json')
     args = parser.parse_args()
-    report = check(args.requirements, args.four_bit, args.require_gpu)
+    report = inspect_platform(args.four_bit) if args.platform else check(args.requirements, args.four_bit, args.require_gpu)
     Path(args.report).write_text(json.dumps(report, indent=2))
