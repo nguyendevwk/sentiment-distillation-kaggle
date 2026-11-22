@@ -285,11 +285,17 @@ def pipeline(args):
         once(work, 'tokenize', prepare + ['tokenize', '--normalized', str(normalized), '--output', str(pool),
              '--model', args.model, '--model-revision', args.model_revision, '--max-length', str(args.max_length),
              '--seed', str(args.seed)], [pool / 'manifest.json', pool / 'pool.jsonl'])
-        for plan, method in [('B', 'coverage'), ('R', 'random')]:
-            directory = work / 'prepared' / plan
-            once(work, 'select-' + plan, prepare + ['select', '--pool', str(pool), '--output', str(directory),
-                 '--method', method, '--seed', str(args.seed)], [directory / 'selection.json',
-                  directory / 'knowdist/manifest.json', directory / 'icldist/manifest.json'])
+        plans_to_prep = [('B', 'coverage'), ('R', 'random')]
+        if args.plan in ('B0', 'D', 'F', 'BCTD'):
+            plans_to_prep.append((args.plan, 'coverage'))
+        for plan_name, method in plans_to_prep:
+            directory = work / 'prepared' / plan_name
+            cmd = prepare + ['select', '--pool', str(pool), '--output', str(directory),
+                             '--method', method, '--seed', str(args.seed)]
+            if plan_name in ('D', 'BCTD'):
+                cmd += ['--stratified-icl']
+            once(work, 'select-' + plan_name, cmd, [directory / 'selection.json',
+                   directory / 'knowdist/manifest.json', directory / 'icldist/manifest.json'])
         if args.plan == 'A':
             scores = work / 'scores-A'
             summary_path = scores / 'summary.json'
@@ -358,7 +364,7 @@ def pipeline(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--work', default='/kaggle/working/sentiment-v1-pilot')
-    parser.add_argument('--plan', choices=['A', 'B', 'R'], default='B')
+    parser.add_argument('--plan', choices=['A', 'B', 'B0', 'D', 'F', 'BCTD', 'R'], default='B')
     parser.add_argument('--model', default='Qwen/Qwen2.5-0.5B-Instruct')
     parser.add_argument('--model-revision', default='main')
     parser.add_argument('--dataset-revision', default='main')
