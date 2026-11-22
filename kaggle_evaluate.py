@@ -104,9 +104,25 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     datasets = [d.strip() for d in args.datasets.split(',') if d.strip()]
 
+    model_name = args.model
+    if args.adapter:
+        adapter_cfg_file = Path(args.adapter) / 'adapter_config.json'
+        if adapter_cfg_file.exists():
+            try:
+                cfg = json.loads(adapter_cfg_file.read_text())
+                detected_model = cfg.get('base_model_name_or_path')
+                if detected_model and detected_model != model_name:
+                    print(f"\n{'*'*70}")
+                    print(f"[Auto-Align] Tự động phát hiện base model gốc: '{detected_model}'")
+                    print(f"[Auto-Align] Đã tự động thay thế '{model_name}' -> '{detected_model}' để tránh lỗi size mismatch!")
+                    print(f"{'*'*70}\n")
+                    model_name = detected_model
+            except Exception as e:
+                print(f"[Warning] Không thể đọc adapter_config.json: {e}")
+
     report = {
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-        'base_model': args.model,
+        'base_model': model_name,
         'adapter': args.adapter,
         'k_shot': args.k_shot,
         'max_samples': args.max_samples,
@@ -125,7 +141,7 @@ def main():
         if not args.skip_base:
             base_res = run_single_eval(
                 script_name=script,
-                model=args.model,
+                model=model_name,
                 adapter=None,
                 dataset=ds,
                 k_shot=args.k_shot,
@@ -141,7 +157,7 @@ def main():
         if args.adapter:
             ft_res = run_single_eval(
                 script_name=script,
-                model=args.model,
+                model=model_name,
                 adapter=args.adapter,
                 dataset=ds,
                 k_shot=args.k_shot,
@@ -161,7 +177,7 @@ def main():
     print("\n" + "="*84)
     print("           SENTIMENT DISTILLATION: BEFORE vs AFTER EVALUATION REPORT")
     print("="*84)
-    print(f"Base Model:         {args.model}")
+    print(f"Base Model:         {model_name}")
     print(f"Adapter Checkpoint: {args.adapter or '<None>'}")
     print(f"Few-shot (k_shot):  {args.k_shot}")
     print(f"Test samples:       {'All' if args.max_samples == 0 else args.max_samples}")
@@ -172,7 +188,7 @@ def main():
 
     lines = []
     lines.append(f"# Báo cáo Đối chứng Đánh giá Trước vs Sau Chưng cất (Sentiment Distillation)\n")
-    lines.append(f"- **Mô hình Gốc (Base)**: `{args.model}`")
+    lines.append(f"- **Mô hình Gốc (Base)**: `{model_name}`")
     lines.append(f"- **LoRA Adapter**: `{args.adapter or 'N/A'}`")
     lines.append(f"- **Số mẫu Demo (k-shot)**: `{args.k_shot}`")
     lines.append(f"- **Thời gian đánh giá**: `{report['timestamp']}`\n")
