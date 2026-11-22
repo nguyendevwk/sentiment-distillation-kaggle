@@ -1,0 +1,9 @@
+# Reuse the platform CUDA PyTorch. Notebook blocks torch/nvidia/triton changes.
+# Known API target; live dependency/import/GPU checks run on Kaggle, not locally.
+transformers==4.51.3
+tokenizers==0.21.4
+huggingface-hub==0.30.2
+peft==0.15.2
+accelerate==1.6.0
+safetensors>=0.5.3,<0.6
+# Optional QLoRA only: bitsandbytes==0.46.1 (not required for ordinary LoRA).

@@ -2,6 +2,22 @@
 
 Research plan (Vietnamese): [Student dưới 1B với corpus teacher công bố](docs/research-plan-sentiment-sub1b.md).
 
+## Kaggle training pilot (Qwen3)
+
+Upload [Sentiment_Distillation_Train_Kaggle.ipynb](notebooks/Sentiment_Distillation_Train_Kaggle.ipynb)
+to Kaggle with GPU + Internet. This standalone notebook trains Qwen3-0.6B (or 1.7B) using the
+published Qwen teacher corpus v2, without running the teacher. It compares uniform response-only
+LoRA with adaptive group weighting based on student learning progress; static balancing and
+relative-loss weighting are available as ablations. Defaults are a 5,000-record maximum pilot
+and 200 steps per mode, not a full paper reproduction.
+
+Run the data audit and explicitly verify prompt/response field mapping before training. The notebook
+records data/model revisions, split IDs, exclusions, group weights, token counts, runtime and VRAM,
+and supports full-state checkpoint resume. Teacher-response validation loss is not SentiBench F1;
+the v2 benchmark evaluator is not integrated into this training pilot. No GPU training has been
+validated locally or on Kaggle yet. See [training instructions](training/README.md) for the method,
+controls, artifacts and limitations. Rebuild with `python3 tools/build_train_notebook.py`.
+
 ## Kaggle / Colab notebook
 
 Upload [Sentiment_Distillation_Kaggle_Colab.ipynb](notebooks/Sentiment_Distillation_Kaggle_Colab.ipynb)

@@ -439,3 +439,41 @@ Tất cả ô kết quả hiện là TBD. Cần bảng bổ sung đủ 12 datase
 7. Thành phần phương pháp thực sự khác related work.
 
 Đầu ra gần nhất cần thực hiện là **data audit + evaluator audit**, sau đó mới viết trainer và chọn tên đề tài cuối. Kế hoạch này không phải bằng chứng đã tái lập được paper hoặc đã tạo model tốt hơn.
+
+## 17. Hướng đóng góp trên corpus teacher cố định (cập nhật 2026-11-09)
+
+Yêu cầu của người dùng: đóng góp ở phương pháp huấn luyện, không tạo lại teacher dataset. Hai student triển khai trước là `Qwen/Qwen3-0.6B` và `Qwen/Qwen3-1.7B`; dùng cùng file Qwen v2 đã khóa revision. Không sửa đáp án, gọi teacher, yêu cầu logits teacher hay tạo rationale mới.
+
+### 17.1 Giả thuyết phương pháp
+
+Hướng ứng viên: phân bổ lại trọng số loss theo tiến bộ học của từng nhóm tác vụ trên corpus đã phát hành. Khác biệt cần kiểm chứng so với CompEffDist là điều phối trong lúc student học, thay vì chỉ dùng lựa chọn dữ liệu tĩnh trước huấn luyện. Đây là giả thuyết nghiên cứu, chưa xác nhận tính mới; curriculum, adaptive multi-task weighting và learning-progress sampling đều có tiền lệ.
+
+Giả thuyết: tăng trọng số vừa phải cho nhóm mà student đang tiếp thu được có thể hiệu quả hơn ưu tiên mọi mẫu có loss cao; nhóm quá khó hoặc nhiễu không mặc nhiên đáng được tăng trọng số.
+
+### 17.2 Phiên bản tối thiểu có thể triển khai
+
+1. Audit metadata, gộp task/cluster thành số nhóm đủ lớn mẫu; không suy ra nhóm từ kết quả SentiBench-test.
+2. Group-split corpus theo input để tạo train và distillation-dev chung cho mọi nhánh. Lưu ID và hash. Nếu giữ holdout, công bố khác biệt với tác giả; không gọi là train đủ 50k.
+3. Warm-up bằng response-only cross-entropy, lấy trung bình token trong từng response rồi trung bình theo mẫu. Chuẩn hóa độ dài này phải giống nhau giữa baseline và đề xuất.
+4. Tại các mốc token cố định, teacher-force một probe dev cố định cho mỗi nhóm để đo loss trên response gốc; không sinh đáp án mới. Tính tiến bộ tương đối bằng EMA của mức giảm loss giữa hai mốc, chuẩn hóa theo loss ban đầu của nhóm. Chỉ dùng tín hiệu đã detach để cập nhật trọng số.
+5. Trọng số nhóm là hỗn hợp giữa trọng số đều và softmax của tiến bộ dương; clip bằng giới hạn đã chốt trên dev, sau đó chuẩn hóa lại. Nhóm không tiến bộ vẫn có trọng số nền. Mọi mẫu train vẫn được đi qua theo cùng thứ tự/shuffle và ngân sách với baseline; phiên bản đầu chỉ thay loss, không thay sampler.
+6. Tính chi phí probe vào thời gian và token tổng. So sánh cả cùng train-token budget và cùng tổng chi phí nếu khả thi. Không tuyên bố tiết kiệm chỉ từ số optimizer steps.
+
+Probe dev dùng để điều phối đã trở thành dữ liệu phát triển của phương pháp; không coi loss trên probe là đánh giá độc lập. Chọn checkpoint bằng holdout khác nếu đủ dữ liệu, hoặc lịch bước cố định chung. Benchmark-dev chỉ phục vụ quyết định đã đăng ký; test không dùng tuning.
+
+### 17.3 Đối chứng và tiêu chí bác bỏ
+
+- Uniform response-only SFT/LoRA: cùng dữ liệu, normalization, optimizer, số token và lịch checkpoint.
+- Static group-balanced weighting: tách tác dụng cân bằng nhóm khỏi tiến bộ học.
+- Loss-based weighting: kiểm tra tiến bộ có tốt hơn ưu tiên nhóm loss cao hay không.
+- Proposed progress-based weighting; ablation trọng số tĩnh/không thành phần tiến bộ tương ứng với baseline trên, không đặt tên mới cho cùng cấu hình.
+- Tune ma trận nhỏ trên 0.6B; khóa công thức rồi kiểm chứng trên 1.7B. Phân biệt seed huấn luyện và seed demonstration đánh giá.
+- Báo Avg-12, từng dataset, FSA, biến thiên seed, lỗi parse, train/probe tokens, thời gian và VRAM. Đặt trước metric chính và mức suy giảm chấp nhận được bằng dev, không chọn sau test.
+- Nếu không hơn static balancing hoặc lợi ích mất khi tính chi phí probe, thu hẹp/bác bỏ đóng góp; không nhận là phương pháp mới chỉ vì dùng Qwen nhỏ.
+
+### 17.4 Related work phải đối chiếu trước khi đặt tên
+
+- CompEffDist: https://arxiv.org/html/2510.24425v1 — lọc dữ liệu theo độ khó.
+- GradNorm: https://proceedings.mlr.press/v80/chen18a.html — cân bằng loss đa tác vụ theo động lực huấn luyện.
+- Multitask Learning Can Improve Worst-Group Outcomes: https://arxiv.org/abs/2312.03151 — tác động tới nhóm yếu.
+- Cần tìm thêm learning-progress sampling, self-paced/curriculum learning và adaptive group weighting; tra cứu sơ bộ chưa đủ chứng nhận novelty. Chỉ giữ định vị phương pháp nếu nêu được khác biệt thuật toán và có đối chứng trực tiếp.
