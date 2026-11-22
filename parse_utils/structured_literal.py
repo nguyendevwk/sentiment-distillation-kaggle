@@ -6,8 +6,7 @@ prefix. Never fabricates closing brackets, cuts rows to three or swaps fields.
 import ast
 
 
-def literal_tuples(text, width):
-    raw = text
+def extract_bracket(text):
     text = text.strip()
     if text.startswith('```'):
         parts = text.splitlines()
@@ -15,6 +14,30 @@ def literal_tuples(text, width):
             text = '\n'.join(parts[1:-1]).strip()
     if text.startswith('Label:'):
         text = text[len('Label:'):].strip()
+    if '\nSentence:' in text:
+        text = text.split('\nSentence:')[0].strip()
+    if '\n\nSentence:' in text:
+        text = text.split('\n\nSentence:')[0].strip()
+    start = text.find('[')
+    if start != -1:
+        depth = 0
+        end = -1
+        for i in range(start, len(text)):
+            if text[i] == '[':
+                depth += 1
+            elif text[i] == ']':
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end != -1:
+            return text[start:end]
+    return text
+
+
+def literal_tuples(text, width):
+    raw = text
+    text = extract_bracket(text)
     try:
         parsed = ast.literal_eval(text)
     except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
