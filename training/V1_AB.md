@@ -1,5 +1,64 @@
 # Distillation v1 với Plan A và Plan B
 
+## Full test cả 12 dataset sau pilot
+
+Trong **phiên Kaggle có GPU**, giữ thư mục pilot cũ chứa `prepared/`, `runs/`,
+manifest và adapter. Cập nhật source rồi dùng output đánh giá mới:
+
+```python
+!git -C /kaggle/working/sentiment-v1-ab-pilot pull --ff-only
+!python /kaggle/working/sentiment-v1-ab-pilot/tools/run_kaggle_evaluation.py --pilot-work /kaggle/working/v1-pilot-01 --output /kaggle/working/full12-evaluation-01 --plan B --pilot-steps 50 --seeds 42 --max-seconds 28800
+```
+
+Không chạy lại launcher pilot để làm bước này. Runner mới nạp base Qwen2.5-0.5B,
+adapter B cuối ICLDIST và checkpoint `zhang-yice/Qwen2.5-1.5B-sentiment-distillation-v1`.
+Model/revision base lấy từ manifest train; revision paper được khóa lần đầu.
+Mặc định một seed đánh giá để lấy số đầy đủ trước. Muốn trung bình ba seed,
+**chọn ngay từ đầu** `--seeds 42 52 62`; đổi danh sách seed sau đó cần output mới.
+Các seed này chọn demo, không phải ba lần train độc lập.
+
+Test là toàn bộ **11.974 lượt mẫu trên 12 dataset** thuộc snapshot tác giả,
+không phải full dataset gốc ngoài SentiBench. Không giới hạn64 mẫu, không cắt
+tỷ lệ dữ liệu; hash và số dòng phải khớp `configs/sentibench_v1_test_manifest.json`.
+Test được copy nguyên byte; chỉ train/val phía demo được lọc exact text trùng
+toàn bộ test, không dựa vào nhãn. Demo mặc định4-shot từ train cho cả12 dataset
+vì ATSA/ACSA không phát hành val; không tự đổi split khi thiếu file.
+
+Runner kiểm tra integrity và tái dựng **các mẫu thực sự đã trình bày cho model**
+từ shuffle/step đã lưu, kể cả batch bị bỏ optimizer update; kiểm tra source input
+và các input demo có marker được hỗ trợ. Nếu phát hiện exact overlap, lưu
+`own-training-exact-audit.json` và dừng: lọc demo lúc đánh giá không sửa được leak
+đã đi vào trọng số. Cần giữ checkpoint lịch sử và train lại với dữ liệu sạch.
+Kiểm tra này không chứng nhận paraphrase/near-duplicate hoặc pretraining; không
+có đủ training provenance để chứng nhận checkpoint paper sạch tuyệt đối.
+Pilot SST2 val64 từng có1 input trùng test nên phải công bố lịch sử tiếp xúc đó.
+
+Protocol `sentibench-v1-full12-corrected-fsa-r1` dùng cùng dữ liệu/demo/prompt và
+scorer cho cả ba model. FSA sửa đọc Python list/tuple nhiều dòng, giữ mọi tuple,
+không tự đóng ngoặc thiếu; ASQP category đứng trước aspect khớp label/demo,
+sửa category typo và bổ sung `food general` cho ACSA. Không dùng constrained
+decoding. Metric gốc được giữ (Opener graph F1); Accuracy FSA là N/A.
+Đây là **đánh giá lại checkpoint paper theo protocol chung đã sửa**, không phải
+cam kết tái lập con số bảng paper với evaluator/demo protocol nguyên bản.
+Không trộn với kết quả parser cũ hoặc chọn A/B/hyperparameter theo test.
+
+Batch mặc định1, FP16 trên T4, context4096, FSA tối đa150 token. Log cảnh báo
+nếu prompt/demo bị left-truncate; từ chối làm mất câu test vì vượt context.
+Forward classification và generation FSA có phạm vi timing khác nhau, không gộp.
+GPU/software được khóa để tránh trộn latency giữa các phiên khác môi trường.
+
+Output `full12-results.csv` chứa F1/Accuracy, độ trễ và peak allocated;
+`full12-report.md/.json` có bảng12 task và Avg-12 chỉ khi đủ12 task/mọi seed.
+Giữ `evaluation-request.json`, `environment*.json`, `benchmark/cleaning.json`,
+`own-training-exact-audit.json`, raw predictions/cache, receipts và logs.
+Mặc định ngân sách mỗi invocation8h, giữ3 phút đệm; đây không phải dự đoán thời
+gian chạy xong. Cache được ghi sau mỗi batch, không công bố F1 từng phần.
+Nếu hết phiên, lưu output và pilot work bằng Kaggle Save Version/download;
+restore về **cùng đường dẫn** rồi chạy đúng lệnh để tiếp tục. Kaggle không tự bảo
+toàn `/kaggle/working` giữa mọi phiên. Đổi source/config phải dùng output mới.
+
+Kiểm tra kế hoạch mà không chạy model: thêm `--dry-run` vào lệnh trên.
+
 Hai phương án dùng cùng model, pool, dev và ICLDIST, output riêng:
 
 | Plan | Chọn KNOWDIST | Fine-tune mặc định |

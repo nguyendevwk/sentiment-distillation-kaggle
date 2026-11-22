@@ -121,6 +121,7 @@ def construct_prompt(prompt, test_examples, demo_pool, k_shot):
     for example in test_examples:
         text = example['sentence']
         demos = random.sample(demo_pool, k=k_shot)
+        example['demo_ids'] = [demo.get('_demo_id') for demo in demos]
         prompts = [prompt]
         prompts.append('')
         for demo in demos:
@@ -139,6 +140,7 @@ def construct_prompt_pstance(prompt, test_examples, demo_pool, k_shot):
         text = example['sentence']
         target = example['target']
         demos = random.sample(demo_pool, k=k_shot)
+        example['demo_ids'] = [demo.get('_demo_id') for demo in demos]
         prompts = [prompt % target]
         prompts.append('')
         for demo in demos:
@@ -282,7 +284,8 @@ if __name__ == '__main__':
 
     label_ids = get_label_list(tokenizer, dataset)
     results = []
-    timings, measured_examples, warmed = [], 0, False
+    warmed = False
+    eval_start = time.monotonic()
     cuda = torch.cuda.is_available()
     with torch.inference_mode():
         for batch in tqdm(dataloader):
@@ -308,14 +311,21 @@ if __name__ == '__main__':
             if args.measure_inference:
                 if cuda:
                     torch.cuda.synchronize()
-                timings.append(time.perf_counter() - start)
-                measured_examples += len(batch['examples'])
+                cache.measure(time.perf_counter() - start, len(batch['examples']),
+                    allocated=torch.cuda.max_memory_allocated() if cuda else 0,
+                    reserved=torch.cuda.max_memory_reserved() if cuda else 0)
             scores = output.logits[:, -1, label_ids].float().cpu()
             for example, score in zip(batch['examples'], scores):
                 cache.put(example, {'prediction': id_to_label[dataset][score.argmax().item()].strip(),
                                     'prediction_score': score.tolist()})
             cache.flush()
             del output, scores, input_ids, attention_mask
+            if args.max_eval_seconds and time.monotonic() - eval_start >= args.max_eval_seconds:
+                break
+
+    if any(cache.get(example) is None for example in test_examples):
+        print('Evaluation paused; prediction cache saved. No partial F1 reported.', flush=True)
+        raise SystemExit(0)
 
     for example in test_examples:
         result = dict(example)
@@ -325,19 +335,6 @@ if __name__ == '__main__':
     predictions = [example['prediction'] for example in results]
     result_metadata = dict(metadata)
     if args.measure_inference:
-        total = sum(timings)
-        ordered = sorted(timings)
-        import math
-        result_metadata['inference_measurement'] = {
-            'scope': 'Model forward only; excludes loading, CPU tokenization, host-to-device copies and scoring; one warm-up batch.',
-            'measured_examples': measured_examples, 'measured_batches': len(timings),
-            'batch_size': args.eval_batch_size, 'forward_seconds': total,
-            'examples_per_second': measured_examples / total if total else None,
-            'amortized_ms_per_example': total * 1000 / measured_examples if measured_examples else None,
-            'mean_batch_latency_ms': total * 1000 / len(timings) if timings else None,
-            'p95_batch_latency_ms': ordered[math.ceil(.95 * len(ordered)) - 1] * 1000 if ordered else None,
-            'peak_allocated_bytes': torch.cuda.max_memory_allocated() if cuda and warmed else None,
-            'peak_reserved_bytes': torch.cuda.max_memory_reserved() if cuda and warmed else None,
-        }
+        result_metadata['inference_measurement'] = cache.measurement_summary('Model forward only', args.eval_batch_size)
     cal_metric(results, labels, predictions, seed, subname, model_name_or_path,
                dataset, output_dir, k_shot, result_metadata)

@@ -17,7 +17,8 @@ def add_runtime_arguments(parser):
     parser.add_argument('--eval_split', choices=['test', 'val'], default='test')
     parser.add_argument('--sample_strategy', choices=['first', 'random'], default='first')
     parser.add_argument('--model_revision', default=None)
-    parser.add_argument('--measure_inference', action='store_true', help='Classification timing after one warm-up batch')
+    parser.add_argument('--measure_inference', action='store_true', help='Forward/generation timing after one warm-up batch')
+    parser.add_argument('--max_eval_seconds', type=float, default=0., help='0: unlimited; save cache and stop between batches')
     parser.add_argument('--max_new_tokens', type=int, default=150)
     parser.add_argument('--resume_file', help='Atomic prediction checkpoint; use a persistent output path')
     parser.add_argument('--adapter', default=None, help='Path to PEFT adapter checkpoint directory')
@@ -29,8 +30,12 @@ def prepare_runtime(args):
     evaluator = Path(sys.argv[0]).name
     if getattr(args, 'eval_split', 'test') != 'test' and evaluator not in ('icl_multifaced_kaggle.py', 'fsa_kaggle.py'):
         raise ValueError('--eval_split is supported by *_kaggle.py evaluators only')
-    if getattr(args, 'measure_inference', False) and evaluator != 'icl_multifaced_kaggle.py':
-        raise ValueError('--measure_inference currently supports icl_multifaced_kaggle.py only')
+    if getattr(args, 'measure_inference', False) and evaluator not in ('icl_multifaced_kaggle.py', 'fsa_kaggle.py'):
+        raise ValueError('--measure_inference requires a *_kaggle.py evaluator')
+    if getattr(args, 'eval_split', None) == 'test' and (args.max_samples != 0 or args.data_prop != 1):
+        raise ValueError('Final test must use the full dataset: max_samples=0, data_prop=1. Use val for subsets.')
+    if getattr(args, 'max_eval_seconds', 0) < 0:
+        raise ValueError('max_eval_seconds must be nonnegative')
     if args.eval_batch_size < 1 or args.k_shot < 0 or args.max_samples < 0:
         raise ValueError('batch_size must be positive; k_shot and max_samples must be nonnegative')
     if args.max_seq_length != -1 and args.max_seq_length < 1:
@@ -61,6 +66,9 @@ def prepare_runtime(args):
     if not torch.cuda.is_available() and dtype == 'float16':
         raise ValueError('Use float32 for CPU evaluation')
     args.resolved_dtype = dtype
+    args.runtime_device = {'name': torch.cuda.get_device_name(0),
+        'capability': list(torch.cuda.get_device_capability(0)),
+        'cuda_version': torch.version.cuda} if torch.cuda.is_available() else {'name': 'CPU'}
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     print(f'Runtime: {"CUDA" if torch.cuda.is_available() else "CPU"}, dtype={dtype}, 4bit={args.load_in_4bit}')
     return model_path
@@ -112,6 +120,8 @@ def load_model(args):
 
 
 def select_examples(raw, args):
+    for index, example in enumerate(raw['test']):
+        example['_evaluation_id'] = index
     count = max(1, int(len(raw['test']) * args.data_prop)) if raw['test'] else 0
     if args.max_samples:
         count = min(count, args.max_samples)
@@ -181,9 +191,13 @@ def run_metadata(args, raw, truncated):
     source_files = [p for p in source_files if p.is_file()]
     source_files += sorted(Path(__file__).parent.glob('parse_utils/*.py'))
     source_hash = hashlib.sha256(b''.join(p.read_bytes() for p in source_files)).hexdigest()
+    demo_ids = [example.get('demo_ids') for example in raw['test']]
+    demo_hash = hashlib.sha256(json.dumps(demo_ids, sort_keys=True).encode()).hexdigest()
     return dict(experiment=args.subname, dataset=args.dataset, seed=args.seed,
                 settings=settings, data_sha256=fingerprint, num_samples=len(raw['test']),
                 source_sha256=source_hash, model_revision=args.resolved_model_revision, adapter_sha256=adapter_hashes,
+                demo_manifest_sha256=demo_hash,
+                runtime_device=getattr(args, 'runtime_device', None),
                 truncated_prompts=truncated,
                 versions={p: version(p) for p in ('torch', 'transformers', 'accelerate', 'numpy', 'scikit-learn')})
 
@@ -194,16 +208,19 @@ class PredictionCache:
         self.path = Path(path) if path else None
         self.metadata = metadata
         self.entries = {}
+        self.performance = {'seconds': 0., 'examples': 0, 'generated_tokens': 0,
+                            'batch_seconds': [], 'peak_allocated_bytes': 0, 'peak_reserved_bytes': 0}
         if self.path and self.path.exists():
             saved = json.loads(self.path.read_text(encoding='utf-8'))
             if saved['metadata'] != metadata:
                 raise ValueError('Checkpoint settings/data/environment differ. Choose a new resume_file or restore the original configuration.')
             self.entries = saved['entries']
+            self.performance = saved.get('performance', self.performance)
             print(f'Resuming {len(self.entries)} cached predictions')
 
     @staticmethod
     def key(example):
-        return hashlib.sha256(example['prompts'].encode()).hexdigest()
+        return hashlib.sha256(json.dumps([example.get('_evaluation_id'), example['prompts']]).encode()).hexdigest()
 
     def get(self, example):
         return self.entries.get(self.key(example))
@@ -211,16 +228,40 @@ class PredictionCache:
     def put(self, example, value):
         self.entries[self.key(example)] = value
 
+    def measure(self, seconds, examples, generated_tokens=0, allocated=0, reserved=0):
+        p = self.performance
+        p['seconds'] += seconds
+        p['examples'] += examples
+        p['generated_tokens'] += generated_tokens
+        p['batch_seconds'].append(seconds)
+        p['peak_allocated_bytes'] = max(p['peak_allocated_bytes'], allocated)
+        p['peak_reserved_bytes'] = max(p['peak_reserved_bytes'], reserved)
+
+    def measurement_summary(self, kind, batch_size):
+        import math
+        p = self.performance
+        times = sorted(p['batch_seconds'])
+        return {'scope': kind + '; excludes loading/tokenization/copies/scoring; one warm-up batch per invocation.',
+            'measured_examples': p['examples'], 'measured_batches': len(times), 'batch_size': batch_size,
+            'inference_seconds': p['seconds'],
+            'amortized_ms_per_example': p['seconds'] * 1000 / p['examples'] if p['examples'] else None,
+            'examples_per_second': p['examples'] / p['seconds'] if p['seconds'] else None,
+            'p95_batch_latency_ms': times[math.ceil(.95 * len(times)) - 1] * 1000 if times else None,
+            'generated_tokens': p['generated_tokens'],
+            'generated_tokens_per_second': p['generated_tokens'] / p['seconds'] if p['seconds'] and p['generated_tokens'] else None,
+            'peak_allocated_bytes': p['peak_allocated_bytes'], 'peak_reserved_bytes': p['peak_reserved_bytes']}
+
     def flush(self):
         if self.path:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temp = self.path.with_suffix(self.path.suffix + '.tmp')
-            temp.write_text(json.dumps({'metadata': self.metadata, 'entries': self.entries}), encoding='utf-8')
+            temp.write_text(json.dumps({'metadata': self.metadata, 'entries': self.entries,
+                                       'performance': self.performance}), encoding='utf-8')
             os.replace(temp, self.path)
 
 
 def save_result_kaggle(output_dir, exper_name, f1, acc, metadata=None):
-    result = (exper_name, {'f1': round(f1, 4), 'acc': round(acc, 4)})
+    result = (exper_name, {'f1': round(f1, 4), 'acc': round(acc, 4) if acc is not None else None})
     if metadata is not None:
         result[1]['metadata'] = metadata
     os.makedirs(output_dir, exist_ok=True)

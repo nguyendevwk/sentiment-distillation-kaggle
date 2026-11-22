@@ -21,6 +21,13 @@ from parse_utils.coqe import Result_coqe
 from parse_utils.atsa import Result_atsa
 from parse_utils.acsa import Result_acsa
 
+from parse_utils import asqp as _asqp, ssa as _ssa, atsa as _atsa, acsa as _acsa
+from parse_utils.structured_literal import asqp_prediction, ssa_prediction, atsa_prediction, acsa_prediction
+_asqp.parse_quards_for_predict = asqp_prediction
+_ssa.parse_quards_for_predict = ssa_prediction
+_atsa.parse_aspect_polarity = atsa_prediction
+_acsa.parse_aspect_polarity = acsa_prediction
+
 
 def ifnt0(x):
     """
@@ -31,27 +38,27 @@ def ifnt0(x):
     return 0 if x is None else x
 
 class FineTuneDataset(Dataset):
-    def __init__(self, dataset_name, dataset, demo_pool ,k_shot, model_name_or_path, mode, max_length):
+    def __init__(self, dataset_name, dataset, demo_pool ,k_shot, model_name_or_path, mode, max_length, model_revision=None):
         self.model_name_or_path = model_name_or_path
         self.demo_pool = demo_pool
         self.k_shot = k_shot
         self.dataset_name = dataset_name
         self.dataset_dict = {dataset_name: dataset}
         self.max_length = max_length
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path, use_fast=True, padding_side='left')
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path, revision=model_revision, use_fast=True, padding_side='left')
         self.tokenizer.pad_token = self.tokenizer.eos_token
         self.mode = mode
         self.prompts = {
-        'absa/asqp_rest16':"""Please perform Aspect Sentiment Quad Prediction task. Given the sentence, extract all (aspect term, aspect category, opinion, sentiment polarity) quadruples.
+        'absa/asqp_rest16':"""Please perform Aspect Sentiment Quad Prediction task. Given the sentence, extract all (aspect category, aspect term, opinion, sentiment polarity) quadruples.
 
-1. Aspect category should be selected from ['ambience general', 'drinks prices','drinks quality', 'drinks style_options', 'food general', 'food prices', 'food quality', 'food style_options', 'location general', 'restaurant general', 'restaurant miscellaneous', 'restaurant pcrices', 'service general'].
+1. Aspect category should be selected from ['ambience general', 'drinks prices','drinks quality', 'drinks style_options', 'food general', 'food prices', 'food quality', 'food style_options', 'location general', 'restaurant general', 'restaurant miscellaneous', 'restaurant prices', 'service general'].
 
 2. Sentiment polarity should be selected from ['negative', 'neutral', 'positive'].
 
 3. If there is no aspect term, use 'NULL' as the aspect term. Only aspect term can be 'NULL', aspect category, opinion and sentiment polarity CANNOT be 'NULL'.
 
 4. Please return python list only, without any other comments or texts.""",
-        'absa/asqp_laptop':"""Please perform Aspect Sentiment Quad Prediction task. Given the sentence, extract all (aspect term, aspect category, opinion, sentiment polarity) quadruples.
+        'absa/asqp_laptop':"""Please perform Aspect Sentiment Quad Prediction task. Given the sentence, extract all (aspect category, aspect term, opinion, sentiment polarity) quadruples.
 
 1. Aspect category should be selected from ['battery miscellaneous', 'battery operation_performance', 'battery quality', 'company general', 'cpu design_features', 'cpu miscellaneous', 'cpu operation_performance', 'cpu quality', 'display design_features', 'display general', 'display operation_performance', 'display quality', 'display usability', 'fans_cooling design_features', 'fans_cooling operation_performance', 'fans_cooling quality', 'graphics design_features', 'graphics general', 'graphics miscellaneous', 'graphics quality', 'hard_disc design_features', 'hard_disc quality', 'hardware general', 'hardware operation_performance', 'hardware quality', 'keyboard design_features', 'keyboard general', 'keyboard operation_performance', 'keyboard quality', 'keyboard usability', 'laptop connectivity', 'laptop design_features', 'laptop general', 'laptop miscellaneous', 'laptop operation_performance', 'laptop portability', 'laptop price', 'laptop quality', 'laptop usability', 'memory design_features', 'motherboard quality', 'mouse design_features', 'mouse general', 'mouse operation_performance', 'mouse quality', 'mouse usability', 'multimedia_devices design_features', 'multimedia_devices general', 'multimedia_devices miscellaneous', 'multimedia_devices operation_performance', 'multimedia_devices quality', 'multimedia_devices usability', 'optical_drives operation_performance', 'optical_drives quality', 'os design_features', 'os general', 'os miscellaneous', 'os operation_performance', 'os quality', 'os usability', 'ports design_features', 'ports operation_performance', 'ports quality', 'power_supply design_features', 'power_supply miscellaneous', 'power_supply operation_performance', 'power_supply quality', 'shipping price', 'shipping quality', 'software design_features', 'software general', 'software miscellaneous', 'software operation_performance', 'software price', 'software quality', 'software usability', 'support miscellaneous', 'support price', 'support quality', 'warranty general', 'warranty price'].
 
@@ -121,7 +128,7 @@ Each tuple should contain:
 
 If any component is missing, use NULL as its placeholder. Please extract all opinion tuples in the format (subject, object, comparative aspect, comparative opinion, comparative preference). Please return python list only, without any other comments or texts.""",
     "absa/atsa_rest16":"Please perform Aspect Term Sentiment Analysis task. Given the sentence, extract all (aspect term, sentiment polarity) pairs.",
-    "absa/acsa_rest16":"Please perform aspect-level sentiment analysis task. Given the sentence, tag all (aspect category, sentiment) pairs. Aspect category should be selected from ['ambience general', 'drinks prices', 'drinks quality', 'drinks style_options', 'food prices', 'food quality', 'food style_options', 'location general', 'restaurant general', 'restaurant miscellaneous', 'restaurant prices', 'service general'], and sentiment should be selected from ['negative', 'neutral', 'positive']. If there are no target-sentiment pairs, return an empty list. Otherwise return a python list of tuples containing two strings in double quotes. Please return python list only, without any other comments or texts.",
+    "absa/acsa_rest16":"Please perform aspect-level sentiment analysis task. Given the sentence, tag all (aspect category, sentiment) pairs. Aspect category should be selected from ['ambience general', 'drinks prices', 'drinks quality', 'drinks style_options', 'food general', 'food prices', 'food quality', 'food style_options', 'location general', 'restaurant general', 'restaurant miscellaneous', 'restaurant prices', 'service general'], and sentiment should be selected from ['negative', 'neutral', 'positive']. If there are no target-sentiment pairs, return an empty list. Otherwise return a python list of tuples containing two strings in double quotes. Please return python list only, without any other comments or texts.",
         }
         self.construct_sample()
 
@@ -138,6 +145,7 @@ If any component is missing, use NULL as its placeholder. Please extract all op
 
         sentence = data['sentence']
         demos = random.sample(self.demo_pool, k=self.k_shot)
+        data['demo_ids'] = [demo.get('_demo_id') for demo in demos]
 
         for demo in demos:
             prompts.append(f"Sentence: {demo['sentence']}\nLabel: {demo['label_seq']}\n")
@@ -330,7 +338,7 @@ def cal_metric(results, f1, seed, subname, model_name_or_path, dataset, output_d
 
 
 
-    save_result(output_dir, file_name, f1, 0, metadata)
+    save_result(output_dir, file_name, f1, None, metadata)
     save_json(results, output_path)
 
 
@@ -472,10 +480,10 @@ if __name__ == '__main__':
 
 
 
-    test_examples = FineTuneDataset(dataset, raw_datasets['test'], raw_datasets['demo'], k_shot, model_name_or_path, 'test', max_seq_length)
+    test_examples = FineTuneDataset(dataset, raw_datasets['test'], raw_datasets['demo'], k_shot, model_name_or_path, 'test', max_seq_length, model_revision=args.model_revision)
     
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, padding_side='left')
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, revision=args.model_revision, padding_side='left')
     tokenizer.pad_token = tokenizer.eos_token
 
 
@@ -493,23 +501,55 @@ if __name__ == '__main__':
     print(model_name_or_path)
     model.eval()
 
+    eval_start, warmed = time.monotonic(), False
+    cuda = torch.cuda.is_available()
     with torch.inference_mode():
         for batch in tqdm(dataloader):
             input_ids = batch['input_ids'].to(model.device)
-            generated_ids = model.generate(
-                input_ids,
-                attention_mask=batch['attention_mask'].to(model.device),
-                max_new_tokens=args.max_new_tokens,
-                num_beams=1, num_return_sequences=1, do_sample=False,
-                pad_token_id=tokenizer.pad_token_id,
-            )
-            # Decode only new tokens, independent of prompt truncation and shot count.
-            generateds = tokenizer.batch_decode(
-                generated_ids[:, input_ids.shape[1]:], skip_special_tokens=True)
+            attention_mask = batch['attention_mask'].to(model.device)
+            options = dict(attention_mask=attention_mask, max_new_tokens=args.max_new_tokens,
+                           num_beams=1, num_return_sequences=1, do_sample=False,
+                           pad_token_id=tokenizer.pad_token_id)
+            if args.measure_inference and not warmed:
+                warmup = model.generate(input_ids, **{**options, 'max_new_tokens': min(8, args.max_new_tokens)})
+                del warmup
+                if cuda:
+                    torch.cuda.synchronize()
+                    torch.cuda.reset_peak_memory_stats()
+                warmed = True
+            if args.measure_inference:
+                if cuda:
+                    torch.cuda.synchronize()
+                started = time.perf_counter()
+            generated_ids = model.generate(input_ids, **options)
+            if args.measure_inference:
+                if cuda:
+                    torch.cuda.synchronize()
+                duration = time.perf_counter() - started
+            tails = generated_ids[:, input_ids.shape[1]:]
+            generateds = tokenizer.batch_decode(tails, skip_special_tokens=True)
+            if args.measure_inference:
+                eos = model.generation_config.eos_token_id
+                eos = {eos} if isinstance(eos, int) else set(eos or [])
+                output_tokens = 0
+                for tail in tails.tolist():
+                    output_tokens += next((i + 1 for i, token in enumerate(tail) if token in eos), len(tail))
+                cache.measure(duration, len(batch['examples']), output_tokens,
+                    allocated=torch.cuda.max_memory_allocated() if cuda else 0,
+                    reserved=torch.cuda.max_memory_reserved() if cuda else 0)
             for example, prediction in zip(batch['examples'], generateds):
                 cache.put(example, prediction.strip())
             cache.flush()
-            del generated_ids, input_ids
+            del generated_ids, tails, input_ids, attention_mask
+            if args.max_eval_seconds and time.monotonic() - eval_start >= args.max_eval_seconds:
+                break
+
+    if any(cache.get(example) is None for example in test_examples):
+        print('Evaluation paused; prediction cache saved. No partial F1 reported.', flush=True)
+        raise SystemExit(0)
+    result_metadata = dict(metadata)
+    if args.measure_inference:
+        result_metadata['inference_measurement'] = cache.measurement_summary('Autoregressive generation', args.eval_batch_size)
 
     outputs = [(example, cache.get(example)) for example in test_examples]
 
@@ -541,4 +581,4 @@ if __name__ == '__main__':
     
     
     
-    cal_metric(outputs,f1_scores, seed, subname, model_name_or_path, dataset, output_dir, k_shot, metadata)
+    cal_metric(outputs,f1_scores, seed, subname, model_name_or_path, dataset, output_dir, k_shot, result_metadata)

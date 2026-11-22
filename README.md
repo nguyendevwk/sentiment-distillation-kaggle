@@ -15,6 +15,15 @@ For clone-and-run on Kaggle, use the [CLI pilot launcher](tools/run_kaggle_pilot
 !python /kaggle/working/sentiment-v1-ab-pilot/tools/run_kaggle_pilot.py --plan B --steps 50 --eval-samples 64 --mapping-confirmed --work /kaggle/working/v1-pilot-01
 ```
 
+After the pilot, evaluate the base, existing B adapter and paper checkpoint on
+all 12 complete official test sets without retraining:
+
+```python
+!python /kaggle/working/sentiment-v1-ab-pilot/tools/run_kaggle_evaluation.py --pilot-work /kaggle/working/v1-pilot-01 --output /kaggle/working/full12-evaluation-01
+```
+
+See [full-test protocol, leakage checks and resume instructions](training/V1_AB.md#full-test-cả-12-dataset-sau-pilot).
+
 Run this after cloning the branch containing the launcher into the indicated
 directory. It downloads v1, prepares B/R, evaluates the base and trained adapter
 on a seeded **validation** subset (SST-2/emotion), runs both training stages,
