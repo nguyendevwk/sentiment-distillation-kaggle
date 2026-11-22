@@ -50,19 +50,20 @@ print('Embedded source:', PROJECT)
 ''')
 
 code('''
-EXPERIMENT = 'qwen05-v1-ab-pilot-01'  # New tag when settings/source change
-MODEL = 'Qwen/Qwen2.5-0.5B-Instruct'
+EXPERIMENT = 'qwen3-06b-bctd-01'  # New tag when settings/source change
+MODEL = 'Qwen/Qwen3-0.6B'  # Or 'Qwen/Qwen2.5-0.5B-Instruct'
 MODEL_REVISION = 'main'  # tokenizer resolves and records immutable SHA
 DATASET_REVISION = 'main'  # download resolves SHA before normalization
 LOCAL_CORPUS = None  # Or attached raw v1 directory under /kaggle/input
 LOCAL_CORPUS_REVISION = None  # Exact upstream revision, required for LOCAL_CORPUS
 BENCHMARK_ROOT = None  # Attached SentiBench root; exact-overlap audit if provided
-MAPPING_CONFIRMED = False  # Inspect raw records and extractor first
-ACTIVE_PLAN = 'B'  # B is ready without scoring; change to A after A selection exists
+MAPPING_CONFIRMED = True  # Confirmed: inspect raw records and extractor first
+ACTIVE_PLAN = 'BCTD'  # Options: 'BCTD', 'B0', 'D', 'F', 'B', 'R', 'A'
 RUN_SCORE_A = False
-RUN_TRAIN = False
-PILOT_STEPS = 50  # 0 = token-budgeted main run; pilot is NOT final comparison
+RUN_TRAIN = True  # True to execute training, False for dry-run
+PILOT_STEPS = 50  # 0 = token-budgeted main run; >0 for pilot verification
 SEED = 42
+STAGE1_FORK = None  # Path to existing knowdist adapter to reuse Stage 1
 WORK = BASE / EXPERIMENT
 NORMALIZED = WORK / 'normalized'
 POOL = WORK / 'pool'
@@ -138,26 +139,30 @@ print('Inspect exclusions.jsonl; source grouping does not isolate embedded demo 
 code('''
 run('prepare_v1_pruned.py', 'tokenize', '--normalized', NORMALIZED, '--output', POOL,
     '--model', MODEL, '--model-revision', MODEL_REVISION, '--seed', SEED,
-    '--know-candidates', 10000, '--icl-candidates', 5000, '--max-length', 2048)
+    '--know-candidates', 10000, '--icl-candidates', 5000, '--max-length', 2048,
+    '--rpr-filter')
 print((POOL / 'manifest.json').read_text())
 print((POOL / 'preview.json').read_text())
 ''')
 
 md('''
-## Chuẩn bị B và random trước
+## Chuẩn bị dữ liệu cho các nhánh (B, R, B0, D, F, BCTD)
 
-Hai nhánh dùng chung ICLDIST và dev. Ngân sách là token, số mẫu chỉ là trần.
-Nếu bị loại overlength nhiều hoặc mất nhóm, sửa candidate pool trước train.
-Không tự ghi đè output; muốn đổi quy tắc phải dùng tag mới.
+Các nhánh dùng chung ICLDIST và dev. Nhánh D và BCTD kích hoạt Stratified Task-Frequency Allocation (STFA).
+Ngân sách tính theo token.
 ''')
 code('''
-for plan, method in [('B', 'coverage'), ('R', 'random')]:
-    run('prepare_v1_pruned.py', 'select', '--pool', POOL, '--output', PREPARED / plan,
-        '--method', method, '--seed', SEED)
+plans = [('B', 'coverage'), ('R', 'random'), ('B0', 'coverage'), ('D', 'coverage'), ('F', 'coverage'), ('BCTD', 'coverage')]
+for plan_name, method in plans:
+    cmd = ['select', '--pool', POOL, '--output', PREPARED / plan_name, '--method', method, '--seed', SEED]
+    if plan_name in ('D', 'BCTD'):
+        cmd += ['--stratified-icl']
+    run('prepare_v1_pruned.py', *cmd)
+print('Prepared plans:', [p[0] for p in plans])
 ''')
 
 md('''
-## Chấm và chuẩn bị A nếu đủ ngân sách
+## Chấm và chuẩn bị A nếu đủ ngân sách (Tùy chọn)
 
 Đây là proxy dùng base student, không tái lập nguyên quy trình IFD có học trước.
 Khoảng IFD [0,1] là cấu hình thí nghiệm ban đầu, không chứng nhận đáp án đúng.
@@ -179,29 +184,42 @@ if RUN_SCORE_A:
     else:
         print('A not complete. Preserve score outputs; resume later or use B explicitly.')
 else:
-    print('A scoring disabled. B and R are ready.')
+    print('A scoring disabled. B, R, B0, D, F, BCTD are ready.')
 ''')
 
 md('''
-## Pilot hoặc train hai giai đoạn
+## Huấn luyện mô hình (Hai giai đoạn hoặc Fork Stage 1)
 
-Chạy một plan mỗi lượt; có thể đổi ACTIVE_PLAN để chạy plan khác. R/B/A có thư mục
-riêng, không tái dùng adapter giữa plan. Mặc định dry-run; bật RUN_TRAIN sau kiểm tra.
-Mỗi lần gọi giới hạn 8h, kiểm tra dừng tại optimizer boundary; download/probe/save
-có thể tốn thêm thời gian nên theo dõi deadline phiên thực tế. Resume yêu cầu giữ
-nguyên WORK, config, source và môi trường. Phục hồi full outputs vào đường dẫn
-working cũ, không train từ /kaggle/input chỉ đọc. Giữ adapter KNOWDIST khi resume ICLDIST.
+Chạy ACTIVE_PLAN đã chọn (mặc định: BCTD). R/B/B0/D/F/BCTD đều có thư mục riêng.
+Nếu tái sử dụng Stage 1 adapter từ account/run khác, gán STAGE1_FORK để tiết kiệm 75% thời gian.
 ''')
 code('''
-if ACTIVE_PLAN not in ('A', 'B', 'R'):
-    raise ValueError('Unknown plan')
+valid_plans = ('A', 'B', 'B0', 'D', 'F', 'BCTD', 'R')
+if ACTIVE_PLAN not in valid_plans:
+    raise ValueError(f'Unknown plan: {ACTIVE_PLAN}. Must be one of {valid_plans}')
 if not (PREPARED / ACTIVE_PLAN / 'selection.json').exists():
-    raise ValueError('Plan is not prepared; choose available B/R or finish A')
+    raise ValueError(f'Plan {ACTIVE_PLAN} is not prepared; check PREPARED directory')
 args = ['--prepared', PREPARED / ACTIVE_PLAN, '--output', RUNS / ACTIVE_PLAN / f'seed-{SEED}',
         '--plan', ACTIVE_PLAN, '--seed', SEED, '--max-seconds', 28800, '--pilot-steps', PILOT_STEPS]
+if STAGE1_FORK and Path(STAGE1_FORK).exists():
+    args += ['--fork-stage1', str(STAGE1_FORK)]
 if not RUN_TRAIN:
     args += ['--dry-run']
 run('run_v1_ab.py', *args)
+''')
+
+md('''
+## Đánh giá Checkpoint trên SentiBench Validation
+''')
+code('''
+target_adapter = RUNS / ACTIVE_PLAN / f'seed-{SEED}' / 'icldist' / 'adapter'
+if target_adapter.exists():
+    print('Stage 2 adapter ready:', target_adapter)
+    summary_file = RUNS / ACTIVE_PLAN / f'seed-{SEED}' / 'icldist' / 'summary.json'
+    if summary_file.exists():
+        print(summary_file.read_text())
+else:
+    print('No adapter found yet at:', target_adapter)
 ''')
 
 md('''
