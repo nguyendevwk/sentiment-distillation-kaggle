@@ -95,6 +95,12 @@ def main():
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir).resolve()
+    # Guard against Kaggle read-only /kaggle/input filesystem
+    if str(out_dir).startswith('/kaggle/input'):
+        parts = out_dir.parts
+        # Redirect to /kaggle/working/output/...
+        out_dir = Path('/kaggle/working') / 'output' / out_dir.name
+        print(f"[Kaggle Guard] Output path was inside read-only /kaggle/input. Auto-redirected to writable: {out_dir}")
     out_dir.mkdir(parents=True, exist_ok=True)
     datasets = [d.strip() for d in args.datasets.split(',') if d.strip()]
 
