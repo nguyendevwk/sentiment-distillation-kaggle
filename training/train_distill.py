@@ -126,9 +126,16 @@ def per_example_loss(logits, labels):
 
 def _disable_torchao():
     """Kaggle pre-installs torchao==0.10.0 which triggers PEFT >= 0.16.0 check crash."""
+    import sys
     try:
         import peft.import_utils
         peft.import_utils.is_torchao_available = lambda: False
+    except Exception:
+        pass
+    try:
+        import peft.tuners.lora.torchao
+        peft.tuners.lora.torchao.is_torchao_available = lambda: False
+        peft.tuners.lora.torchao.dispatch_torchao = lambda *args, **kwargs: None
     except Exception:
         pass
     try:
@@ -141,6 +148,12 @@ def _disable_torchao():
         peft.tuners.lora.model.is_torchao_available = lambda: False
     except Exception:
         pass
+    for mod in list(sys.modules.values()):
+        if hasattr(mod, 'is_torchao_available'):
+            try:
+                mod.is_torchao_available = lambda: False
+            except Exception:
+                pass
 
 
 def train(args):

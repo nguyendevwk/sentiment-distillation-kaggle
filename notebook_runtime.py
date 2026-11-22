@@ -52,6 +52,27 @@ def prepare_runtime(args):
     return model_path
 
 
+def _disable_torchao():
+    import sys
+    try:
+        import peft.import_utils
+        peft.import_utils.is_torchao_available = lambda: False
+    except Exception:
+        pass
+    try:
+        import peft.tuners.lora.torchao
+        peft.tuners.lora.torchao.is_torchao_available = lambda: False
+        peft.tuners.lora.torchao.dispatch_torchao = lambda *args, **kwargs: None
+    except Exception:
+        pass
+    for mod in list(sys.modules.values()):
+        if hasattr(mod, 'is_torchao_available'):
+            try:
+                mod.is_torchao_available = lambda: False
+            except Exception:
+                pass
+
+
 def load_model(args):
     import torch
     from transformers import AutoModelForCausalLM, BitsAndBytesConfig
@@ -66,11 +87,7 @@ def load_model(args):
     model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path, **options)
     args.resolved_model_revision = getattr(model.config, '_commit_hash', None)
     if getattr(args, 'adapter', None):
-        try:
-            import peft.import_utils
-            peft.import_utils.is_torchao_available = lambda: False
-        except Exception:
-            pass
+        _disable_torchao()
         from peft import PeftModel
         print(f'Loading PEFT adapter from {args.adapter}')
         model = PeftModel.from_pretrained(model, args.adapter)
