@@ -1,0 +1,75 @@
+{
+  "repository": "https://github.com/HITSZ-HLT/Sentiment-Distillation",
+  "revision": "2810fc2826e8f7c2ae6a0d6dd328ab7d8979744a",
+  "remote_main_verified_date": "2026-11-22",
+  "scope": "Official released SentiBench test files, not the original larger datasets such as IMDb 25k.",
+  "files": {
+    "absa/acsa_rest16": {
+      "path": "datasets/absa/acsa_rest16/test.json",
+      "records": 676,
+      "sha256": "366d696fa61e276c47fda91afae7143ab4894b9b38c224cc61f5f2d34425a1ed"
+    },
+    "absa/asqp_rest16": {
+      "path": "datasets/absa/asqp_rest16/test.json",
+      "records": 544,
+      "sha256": "ddc44a343c472d518519fd4ce3ab73d8d544fbcf55cebe4726404cf9603ae6b0"
+    },
+    "absa/atsa_rest16": {
+      "path": "datasets/absa/atsa_rest16/test.json",
+      "records": 676,
+      "sha256": "366d696fa61e276c47fda91afae7143ab4894b9b38c224cc61f5f2d34425a1ed"
+    },
+    "absa/opener": {
+      "path": "datasets/absa/opener/test.json",
+      "records": 499,
+      "sha256": "3d18f3e66aefdf89953e38002659d08680acb389aeeef498190abfb22c0f02c4"
+    },
+    "multifaced/intimacy": {
+      "path": "datasets/multifaced/intimacy/test.json",
+      "records": 396,
+      "sha256": "ae2d33d6b1f4a525d46f00804513e2848d3fb5952fbc12705d7a9a53f8be4e07"
+    },
+    "multifaced/irony18": {
+      "path": "datasets/multifaced/irony18/test.json",
+      "records": 784,
+      "sha256": "73e49fb448d578942ba42012218261d0e6e6627069eda56064b56d44042176ed"
+    },
+    "multifaced/pstance": {
+      "path": "datasets/multifaced/pstance/test.json",
+      "records": 2157,
+      "sha256": "517254a3efe275255caa488df9c3d300a9dd04b4e67294fc295c3c389dbd1749"
+    },
+    "multifaced/tweeteval": {
+      "path": "datasets/multifaced/tweeteval/test.json",
+      "records": 1421,
+      "sha256": "8681d9d1fc5c0347a42bfbc6d5bc629e63cab30f15637d647173354ac4e2886f"
+    },
+    "sc/imdb": {
+      "path": "datasets/sc/imdb/test.json",
+      "records": 1000,
+      "sha256": "17fc953030f99f2b6bf1fe9222aed0e7d6549bccc420a0a1b3acac2724856197"
+    },
+    "sc/sst2": {
+      "path": "datasets/sc/sst2/test.json",
+      "records": 1821,
+      "sha256": "01ae017537028c8ee4bc094ae096e2431b34244693761a57e04830eff6119655"
+    },
+    "sc/twitter": {
+      "path": "datasets/sc/twitter/test.json",
+      "records": 1000,
+      "sha256": "c20481ffe41c82c8a3b8e68908faf6406be2e9ef79f9ee49a8dde9f05c1f3650"
+    },
+    "sc/yelp2": {
+      "path": "datasets/sc/yelp2/test.json",
+      "records": 1000,
+      "sha256": "3e1a25d83a2c21e744bd7bd1a7ec51d23a37cb33d8b1eb834475b5a37446285e"
+    }
+  },
+  "policy": {
+    "final_test_max_samples": 0,
+    "final_test_data_prop": 1,
+    "test_for_model_or_data_selection": false,
+    "allow_test_data_in_training_or_demonstrations": false,
+    "claim_avg12_only_when_all12_measured": true
+  }
+}

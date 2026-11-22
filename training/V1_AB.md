@@ -144,6 +144,31 @@ riêng cho SmolLM2. Scoring ghi model revision, pool hash và thời gian, có r
 Evaluator ASQP/latency/adapter-cache vẫn cần audit trước so sánh benchmark cuối.
 Không ghép điểm từ notebook cũ với checkpoint mới sau khi đổi giao thức.
 
+## Dùng đúng full test của paper và kiểm tra leak
+
+`configs/sentibench_v1_test_manifest.json` khóa số mẫu/SHA256 của 12 test.json
+trong repo chính thức HITSZ-HLT/Sentiment-Distillation tại commit
+2810fc2826e8f7c2ae6a0d6dd328ab7d8979744a. Final test phải dùng đúng snapshot,
+max_samples=0/data_prop=1 cho mỗi dataset đã chốt; không tự chia lại hoặc thay
+bằng dataset khác. Chỉ dùng Avg-12 khi đo đầy đủ 12 tập. Mọi model so sánh dùng
+cùng test/demo IDs, seed và scorer đã audit. Pilot CLI vẫn chỉ dùng validation.
+
+Audit CPU, không chạy model và không sửa nhãn/test:
+
+```python
+!python /kaggle/working/sentiment-v1-ab-pilot/tools/audit_benchmark_splits.py --output /kaggle/working/benchmark-split-audit-01.json --pilot-samples 64 --seed 42 --check-final-test-request --max-samples 0 --data-prop 1 --fail-on-overlap
+```
+
+Exit2 nếu test không khớp snapshot hoặc train/val có text trùng test. Audit chỉ
+kiểm tra exact sau whitespace/casefold, không chứng nhận near-duplicate hoặc
+teacher corpus/demos nhúng. Nó là preflight riêng, chưa tự chặn evaluator.
+
+Audit dữ liệu gốc phát hiện một dòng SST-2 val trùng test, nằm trong pilot64;
+IMDb train có1, ASQP/ATSA/ACSA mỗi3, Opener19 dòng giao exact với test. Vì vậy
+không gọi pilot này là sạch leak. Cần loại phía train/dev/demo và chấm lại theo
+giao thức mới; giữ nguyên test. Không dùng nhãn/điểm test để chọn A/B, dữ liệu,
+hyperparameter hoặc checkpoint; chỉ dùng test text cho audit loại giao đã đăng ký.
+
 ## Kiểm tra local không chạy model
 
 ```bash
