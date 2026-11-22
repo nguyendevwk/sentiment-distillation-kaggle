@@ -1,4 +1,12 @@
 {
+  "qwen2.5-0.5b": "Qwen/Qwen2.5-0.5B-Instruct",
+  "qwen3-0.6b": "Qwen/Qwen3-0.6B",
+  "qwen3.5-0.8b": "Qwen/Qwen3.5-0.8B",
+  "qwen2.5-1.5b": "Qwen/Qwen2.5-1.5B-Instruct",
+  "qwen3-1.7b": "Qwen/Qwen3-1.7B",
+  "smollm2-360m": "HuggingFaceTB/SmolLM2-360M-Instruct",
+  "smollm2-1.7b": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+  "deepseek-r1-1.5b": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
   "Qwen2.5-1.5B-sentiment-distillation-v1": "./model_weights/Qwen2.5-1.5B-sentiment-distillation-v1",
   "llama-3-1B-sentiment-distillation-v1": "./model_weights/llama-3-1B-sentiment-distillation-v1",
   "llama-3-3B-sentiment-distillation-v1": "./model_weights/llama-3-3B-sentiment-distillation-v1"

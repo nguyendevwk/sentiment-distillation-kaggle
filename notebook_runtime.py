@@ -13,6 +13,7 @@ def add_runtime_arguments(parser):
     parser.add_argument('--demo_split', choices=['train', 'val'], default='train')
     parser.add_argument('--max_new_tokens', type=int, default=150)
     parser.add_argument('--resume_file', help='Atomic prediction checkpoint; use a persistent output path')
+    parser.add_argument('--adapter', default=None, help='Path to PEFT adapter checkpoint directory')
 
 
 def prepare_runtime(args):
@@ -61,6 +62,15 @@ def load_model(args):
             bnb_4bit_use_double_quant=True, bnb_4bit_compute_dtype=getattr(torch, args.resolved_dtype))
     model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path, **options)
     args.resolved_model_revision = getattr(model.config, '_commit_hash', None)
+    if getattr(args, 'adapter', None):
+        try:
+            import peft.import_utils
+            peft.import_utils.is_torchao_available = lambda: False
+        except Exception:
+            pass
+        from peft import PeftModel
+        print(f'Loading PEFT adapter from {args.adapter}')
+        model = PeftModel.from_pretrained(model, args.adapter)
     model.eval()
     return model
 

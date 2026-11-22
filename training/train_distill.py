@@ -212,9 +212,10 @@ def train(args):
     if checkpoint:
         model = PeftModel.from_pretrained(model, checkpoint / 'adapter', is_trainable=True)
     else:
+        target_mods = [m.strip() for m in args.target_modules.split(',') if m.strip()]
         model = get_peft_model(model, LoraConfig(
             task_type='CAUSAL_LM', r=args.rank, lora_alpha=args.rank * 2,
-            lora_dropout=0., target_modules=['q_proj', 'k_proj', 'v_proj', 'o_proj']))
+            lora_dropout=0., target_modules=target_mods))
     model.print_trainable_parameters()
     optimizer = torch.optim.AdamW((p for p in model.parameters() if p.requires_grad),
                                  lr=args.learning_rate, weight_decay=0.01)
@@ -428,6 +429,8 @@ def main():
     t.add_argument('--grad_accum', type=int, default=8)
     t.add_argument('--learning_rate', type=float, default=1e-4)
     t.add_argument('--rank', type=int, default=16)
+    t.add_argument('--target_modules', default='q_proj,k_proj,v_proj,o_proj',
+                   help='Comma-separated LoRA target module names')
     t.add_argument('--warmup_ratio', type=float, default=0.05)
     t.add_argument('--warmup_steps', type=int, default=25, help='Before adaptive updates')
     t.add_argument('--probe_every', type=int, default=25)
