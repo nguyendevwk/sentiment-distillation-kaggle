@@ -124,12 +124,33 @@ def per_example_loss(logits, labels):
     return torch.stack(result)
 
 
+def _disable_torchao():
+    """Kaggle pre-installs torchao==0.10.0 which triggers PEFT >= 0.16.0 check crash."""
+    try:
+        import peft.import_utils
+        peft.import_utils.is_torchao_available = lambda: False
+    except Exception:
+        pass
+    try:
+        import peft.tuners.lora.layer
+        peft.tuners.lora.layer.is_torchao_available = lambda: False
+    except Exception:
+        pass
+    try:
+        import peft.tuners.lora.model
+        peft.tuners.lora.model.is_torchao_available = lambda: False
+    except Exception:
+        pass
+
+
 def train(args):
     import os
     os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
     import numpy as np
     import torch
+    _disable_torchao()
     from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
+    _disable_torchao()
     from transformers import (AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig,
                               get_cosine_schedule_with_warmup, set_seed)
     if not torch.cuda.is_available():
@@ -350,6 +371,7 @@ def train(args):
 
 def export(args):
     import torch
+    _disable_torchao()
     from peft import PeftModel
     from transformers import AutoModelForCausalLM, AutoTokenizer
     run = Path(args.run)

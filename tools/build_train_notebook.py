@@ -104,6 +104,8 @@ Không cần Hugging Face token cho Qwen public; nếu bị rate-limit, dùng se
 ''')
 code('''
 if INSTALL_DEPENDENCIES:
+    # Gỡ bỏ torchao lỗi thời của Kaggle để tránh xung đột với peft
+    subprocess.run([sys.executable, '-m', 'pip', 'uninstall', '-y', 'torchao'], check=False)
     extra = ['bitsandbytes==0.46.1'] if FOUR_BIT else []
     report = WORK / 'pip-plan.json'
     base = [sys.executable, '-m', 'pip', 'install', '--only-binary=:all:', '-r', str(REQUIREMENTS), *extra]
