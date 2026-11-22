@@ -29,9 +29,14 @@ def build_request(prepared, config, plan, seed, pilot_steps=0):
             raise ValueError('Stages use different tokenizers')
         if pool_sha is not None and manifest['pool_sha256'] != pool_sha:
             raise ValueError('Stages use different candidate pools')
-        expected_method = config['plans'][plan]['selection'] if stage == 'knowdist' else 'coverage'
+        if stage == 'knowdist':
+            expected_method = config['plans'][plan]['selection']
+        elif config['plans'][plan].get('stratified_icl'):
+            expected_method = 'stfa_stratified'
+        else:
+            expected_method = 'coverage'
         if manifest['selection']['method'] != expected_method:
-            raise ValueError('Stage selection does not match plan')
+            raise ValueError(f'Stage {stage} selection does not match plan: {manifest["selection"]["method"]} != {expected_method}')
         tokenizer_hashes, pool_sha = manifest['tokenizer_hashes'], manifest['pool_sha256']
         shared_model, model_revision = manifest['model'], manifest['model_revision']
         train = [r for _, r in read_records(directory / 'train.jsonl')]
