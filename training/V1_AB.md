@@ -2,6 +2,12 @@
 
 ## Full test cả 12 dataset sau pilot
 
+**Chưa phải tái lập khớp100% paper.** Paper-text yêu cầu Dev demos và ba seed;
+source phát hành dùng train demos, còn ATSA/ACSA thiếu Dev400. Runner hiện tại
+chấm lại theo clean/corrected protocol đã công bố. Đọc
+[audit paper và source](SENTIBENCH_PROTOCOL_AUDIT.md) trước khi dùng số vào báo cáo;
+không tự resplit hoặc đổi parser rồi gọi kết quả là paper-equivalent.
+
 Trong **phiên Kaggle có GPU**, giữ thư mục pilot cũ chứa `prepared/`, `runs/`,
 manifest và adapter. Cập nhật source rồi dùng output đánh giá mới:
 
