@@ -9,6 +9,7 @@ from importlib.metadata import PackageNotFoundError, version
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import time
@@ -34,6 +35,90 @@ def execute(cmd, log):
         raise subprocess.CalledProcessError(code, cmd)
 
 
+def normalized_output_valid(cmd):
+    """Adopt an orphan normalization only when all data/settings are verified."""
+    def option(name, default=None):
+        return str(cmd[cmd.index(name) + 1]) if name in cmd else default
+    directory = Path(option('--output'))
+    try:
+        manifest = json.loads((directory / 'manifest.json').read_text())
+        if manifest['corpus_revision'] != option('--revision') or manifest['seed'] != int(option('--seed', '42')):
+            return False
+        if manifest['dev_fraction'] != float(option('--dev-fraction', '.1')):
+            return False
+        expected_source = digest([file_hash(ROOT / 'training/prepare_v1_pruned.py'), file_hash(ROOT / 'training/v1_core.py')])
+        if manifest['source_sha256'] != expected_source:
+            return False
+        if file_hash(directory / 'canonical.jsonl') != manifest['canonical_sha256']:
+            return False
+        raw = Path(option('--input'))
+        source_files = sorted(p for p in raw.rglob('*') if p.suffix in ('.json', '.jsonl')
+                              and not p.name.endswith('manifest.json') and '.cache' not in p.parts)
+        if {str(p.relative_to(raw)): file_hash(p) for p in source_files} != manifest['files']:
+            return False
+        benchmark = option('--benchmark-root')
+        expected = {str(p.relative_to(benchmark)): file_hash(p)
+                    for p in sorted(Path(benchmark).glob('*/*/test.json'))} if benchmark else {}
+        if manifest['benchmark_files'] != expected:
+            return False
+        return (directory / 'exclusions.jsonl').is_file()
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def recover_normalization(work, cmd):
+    directory = Path(str(cmd[cmd.index('--output') + 1]))
+    if not directory.exists() or not any(directory.iterdir()):
+        return False
+    if normalized_output_valid(cmd):
+        print('Recovered completed normalization without receipt:', directory, flush=True)
+        return True
+    archive = work / 'recovery' / f'normalize-incomplete-{time.time_ns()}'
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(directory), str(archive))
+    write_json(archive / 'recovery-reason.json', {'reason': 'Missing receipt and unverifiable/incomplete normalization',
+               'original_path': str(directory), 'command': list(map(str, cmd))})
+    print('Preserved incomplete normalization:', archive, flush=True)
+    return False
+
+
+def accept_request(work, shared, repair_preparation=False):
+    """Allow an explicit source upgrade only before scoring/evaluation/training.
+
+    Retain raw downloads and logs. Archive all derived preparation and old
+    receipts together; never mix model runs across a source upgrade.
+    """
+    request = work / 'pilot-request.json'
+    if not request.exists():
+        write_json(request, shared)
+        return
+    previous = json.loads(request.read_text())
+    if previous == shared:
+        return
+    settings = lambda value: {k: v for k, v in value.items() if k != 'source_sha256'}
+    if not repair_preparation or settings(previous) != settings(shared):
+        raise ValueError('Pilot settings/source differ. For a source-only fix before model work, use --repair-preparation; otherwise choose a new --work.')
+    protected = ('runs', 'evaluation', 'scores-A')
+    if any(p.is_file() for name in protected for p in (work / name).rglob('*')):
+        raise ValueError('Cannot repair preparation after scoring/evaluation/training artifacts exist. Keep this run and use a new --work.')
+    archive = work / 'recovery' / f'source-upgrade-{time.time_ns()}'
+    archive.mkdir(parents=True)
+    shutil.move(str(request), str(archive / request.name))
+    for name in ('normalized', 'pool', 'prepared', 'state'):
+        path = work / name
+        if path.exists():
+            shutil.move(str(path), str(archive / name))
+    for pattern in ('report-*.json', 'report-*.md', 'failure-*.json'):
+        for path in work.glob(pattern):
+            shutil.move(str(path), str(archive / path.name))
+    (work / 'state').mkdir(exist_ok=True)
+    write_json(archive / 'recovery-reason.json', {'reason': 'Explicit preparation-only source upgrade',
+               'previous_source_sha256': previous.get('source_sha256'), 'new_source_sha256': shared.get('source_sha256'),
+               'preserved_in_place': ['raw-v1', 'logs']})
+    write_json(request, shared)
+    print('Archived prior preparation; reusing raw download:', archive, flush=True)
+
+
 def once(work, name, cmd, outputs):
     receipt = work / 'state' / f'{name}.json'
     identity = list(map(str, cmd))
@@ -46,7 +131,9 @@ def once(work, name, cmd, outputs):
                 raise ValueError(f'{name}: output changed/missing: {path}')
         print('Reuse:', name, flush=True)
         return
-    execute(cmd, work / 'logs' / f'{name}.log')
+    recovered = name == 'normalize' and recover_normalization(work, cmd)
+    if not recovered:
+        execute(cmd, work / 'logs' / f'{name}.log')
     write_json(receipt, {'command': identity,
                         'outputs': {str(p): file_hash(p) for p in outputs}})
 
@@ -169,10 +256,7 @@ def pipeline(args):
         'dataset_revision_requested': args.dataset_revision, 'local_corpus': args.local_corpus,
         'local_corpus_revision': args.local_corpus_revision, 'seed': args.seed, 'max_length': args.max_length,
         'eval_samples': args.eval_samples, 'steps': args.steps}
-    request = work / 'pilot-request.json'
-    if request.exists() and json.loads(request.read_text()) != shared:
-        raise ValueError('Pilot settings/source differ; preserve old outputs and choose a new --work')
-    write_json(request, shared)
+    accept_request(work, shared, args.repair_preparation)
     begin = time.monotonic()
     try:
         environment(work)
@@ -281,6 +365,8 @@ def main():
     parser.add_argument('--local-corpus')
     parser.add_argument('--local-corpus-revision')
     parser.add_argument('--mapping-confirmed', action='store_true')
+    parser.add_argument('--repair-preparation', action='store_true',
+                        help='After a source-only fix, archive preparation/receipts before model work; reuse downloaded raw corpus')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--steps', type=int, default=50)
     parser.add_argument('--eval-samples', type=int, default=64)

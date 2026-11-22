@@ -14,6 +14,7 @@ import math
 from pathlib import Path
 import shutil
 import time
+from functools import wraps
 
 from distill_core import digest, file_hash, read_records, write_json
 from v1_core import (canonical_record, iter_objects, limited_candidates, normalized_text,
@@ -26,6 +27,34 @@ def fresh(path):
         raise ValueError(f'Output is not empty: {path}; choose a new experiment directory')
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def atomic_preparation(func):
+    """Publish a preparation directory only after the entire step succeeds.
+
+    Failed attempts are kept beside the destination for diagnosis, never deleted.
+    The original Namespace is unchanged so callers retain the final output path.
+    """
+    @wraps(func)
+    def wrapped(args):
+        target = Path(args.output)
+        if target.exists() and any(target.iterdir()):
+            raise ValueError(f'Output is not empty: {target}; use launcher recovery or a new output')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        staging = target.with_name(f'.{target.name}.pending-{time.time_ns()}')
+        copied = argparse.Namespace(**vars(args))
+        copied.output = str(staging)
+        try:
+            result = func(copied)
+            staging.rename(target)
+            return result
+        except BaseException:
+            if staging.exists():
+                failed = staging.with_name(staging.name.replace('.pending-', '.failed-', 1))
+                staging.rename(failed)
+                print(f'Incomplete preparation preserved: {failed}', flush=True)
+            raise
+    return wrapped
 
 
 def jsonl(path, rows):
@@ -45,6 +74,7 @@ def download(args):
     print(f'Downloaded v1 revision {revision}; inspect schemas before normalize.')
 
 
+@atomic_preparation
 def normalize(args):
     if not args.mapping_confirmed:
         raise ValueError('Inspect full source records/extraction rules; then pass --mapping-confirmed')
@@ -100,6 +130,7 @@ def normalize(args):
     print(json.dumps(dict(counts), indent=2))
 
 
+@atomic_preparation
 def tokenize(args):
     from huggingface_hub import HfApi
     from transformers import AutoTokenizer
@@ -237,6 +268,7 @@ def score(args):
     print(f'Scored {len(scores)}/{len(rows)}. Partial scores cannot select A; B remains available.')
 
 
+@atomic_preparation
 def select(args):
     manifest, pool = load_pool(args.pool)
     scores = None

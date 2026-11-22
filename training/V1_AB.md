@@ -41,6 +41,19 @@ forward latency; train wall có phạm vi riêng. Không ghép số pilot val v�
 Rerun nguyên lệnh để reuse các bước có receipt hash và resume train. Nếu mất
 phiên, restore toàn bộ work vào cùng đường dẫn working cũ trước chạy. Đổi source,
 model, seed, steps hoặc eval sample count thì dùng work mới; không tự ghi đè.
+
+Ngoại lệ phục hồi chuẩn bị: sau khi cập nhật một bản sửa mã, nếu chưa có artifact
+scoring/evaluation/train, thêm `--repair-preparation` vào đúng lệnh cũ. Launcher
+giữ raw-v1 và logs, chuyển normalized/pool/prepared/state cùng request/report cũ
+vào recovery/source-upgrade-*, rồi tạo lại phần chuẩn bị. Không đổi model/seed/
+steps/eval sample count trong thao tác này. Nếu đã có artifact model thì từ chối;
+phải giữ run cũ và dùng work mới để không trộn thí nghiệm.
+
+Normalize hoàn tất nhưng thiếu receipt được tái sử dụng chỉ khi manifest, corpus,
+benchmark, source và canonical hash đều khớp. Normalize dang dở được giữ trong
+recovery/normalize-incomplete-* trước khi thử lại. Các bước normalize/tokenize/
+select mới chỉ publish thư mục đích sau khi thành công; attempt lỗi giữ ở thư mục
+.tên-bước.failed-* bên cạnh để kiểm tra, không xóa hoặc ghi đè dữ liệu cũ.
 Chuyển `--plan A`/`--plan R` giữ cùng work để dùng pool/dev/ICLDIST chung, output
 riêng. `--score-seconds` giới hạn scoring A; B dùng được khi A thiếu điểm/lỗi.
 `--include-paper-reference` bổ sung checkpoint paper đã distillation trên cùng val

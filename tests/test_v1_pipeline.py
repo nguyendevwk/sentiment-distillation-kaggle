@@ -33,6 +33,27 @@ def fixture_rows():
 
 
 class NormalizationTests(unittest.TestCase):
+    def test_failed_normalization_does_not_publish_partial_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, out = Path(tmp) / 'raw', Path(tmp) / 'normalized'
+            root.mkdir()
+            (root / 'analysis_basic.json').write_text(json.dumps([
+                {'prompt': f'Analyze\n\nReview: {i}', 'llm_response': 'teacher', 'instr_type': 'analysis_basic'}
+                for i in range(50)]))
+            args = argparse.Namespace(input=str(root), output=str(out), revision='fixture', mapping_confirmed=True,
+                                      benchmark_root=None, seed=42, dev_fraction=.2)
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(ValueError, 'Missing train stage'):
+                    normalize(args)
+            self.assertFalse(out.exists())
+            self.assertTrue(list(Path(tmp).glob('.normalized.failed-*/canonical.jsonl')))
+            self.assertEqual(args.output, str(out))
+            (root / 'sentiment_distillation_data_80k.json').write_text(json.dumps([
+                {'instruction': f'Sentence: {i}\nOutput: ', 'output': 'positive'} for i in range(50)]))
+            with contextlib.redirect_stdout(io.StringIO()):
+                normalize(args)
+            self.assertTrue((out / 'manifest.json').is_file())
+
     def test_stream_formats_bom_large_and_malformed(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / 'rows.json'
