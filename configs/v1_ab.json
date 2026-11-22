@@ -11,7 +11,21 @@
   "plans": {
     "R": {"selection": "random", "mode": "uniform"},
     "A": {"selection": "student", "mode": "uniform"},
-    "B": {"selection": "coverage", "mode": "uniform"}
+    "B": {"selection": "coverage", "mode": "uniform"},
+    "B0": {"selection": "coverage", "mode": "uniform"},
+    "D": {"selection": "coverage", "mode": "uniform", "stratified_icl": true},
+    "F": {"selection": "coverage", "mode": "uniform", "replay_mode": "random", "replay_ratio": 0.1},
+    "BCTD": {
+      "selection": "coverage",
+      "mode": "uniform",
+      "stratified_icl": true,
+      "replay_mode": "hard",
+      "replay_ratio": 0.1,
+      "sample_normalized_loss": true,
+      "replay_decay": "0.2:0.05",
+      "neftune_alpha": 5.0,
+      "max_grad_norm": 0.5
+    }
   },
   "switch_policy": {
     "selection_split": "probe",

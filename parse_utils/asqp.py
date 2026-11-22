@@ -98,76 +98,12 @@ def parse_quards_for_true(quards_seq, sentence):
     return quards_tuple
 
 
+from parse_utils.structured_literal import asqp_prediction
+
+
 def parse_quards_for_predict(quards_seq, sentence):
-
-
-    quards_seq = quards_seq.replace('```python', '')
-    quards_seq = quards_seq.replace('```', '')
-    quards_seq = quards_seq.strip()
-    quards_seq = quards_seq.replace('\n]', ']')
-    quards_seq = quards_seq.replace('[\n', '[')
-    quards_seq = quards_seq.split('\n')[-1]
-    quards_seq = quards_seq.strip()
-
-
-    valid_flag = True
-    print("before parsed :", quards_seq)
-
-    try:
-        quards_seq = ast.literal_eval(quards_seq)
-        
-        
-        quards_seq = set(quards_seq)
-
-        quards_seq = [tuple(item) for item in quards_seq]
-        print("Parsed1 List:", quards_seq)
-    except:
-        try: 
-            
-            last_paren_index = quards_seq.rfind(")")
-
-            if last_paren_index != -1:
-                quards_seq = quards_seq[:last_paren_index+1] + "]"
-            else:
-                quards_seq = quards_seq + "]"  # 兜底处理
-
-            # 解析为 Python list
-            quards_seq = ast.literal_eval(quards_seq)
-            quards_seq = set(quards_seq)
-            quards_seq = [tuple(item) for item in quards_seq][:3]
-            print("Parsed List2:", quards_seq)
-        except:
-                quards_seq = []
-
-
-    def parse_seq(item):
-        
-        if len(item) != 4:
-            return False
-
-        category, aspect , opinion, sentiment = item
-        category = category.strip()
-        aspect = aspect.strip()
-        opinion = opinion.strip()
-        sentiment = sentiment.strip()
-
-
-        return category, aspect, opinion, sentiment
-
-    quards_list = []
-
-    for sub_seq in quards_seq:
-        quards = parse_seq(sub_seq)
-        if not quards:
-            valid_flag = False
-        else:
-            quards_list.append(quards)
-
-    print('-'*100)
-    print('final_list:', quards_list)
-    print('-'*100)
-
-    return quards_seq, quards_list, valid_flag
+    raw_result, kept, valid = asqp_prediction(quards_seq, sentence)
+    return raw_result, kept, valid
 
 
 class Result_asqp:

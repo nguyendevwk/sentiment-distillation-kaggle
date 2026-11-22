@@ -18,7 +18,24 @@ from functools import wraps
 
 from distill_core import digest, file_hash, read_records, write_json
 from v1_core import (canonical_record, iter_objects, limited_candidates, normalized_text,
-                     select_rows, split_name)
+                     select_rows, select_rows_stfa, split_name)
+
+
+def parse_token_budget(val):
+    if not val:
+        return {'knowdist': 1500000, 'icldist': 500000}
+    v = str(val).lower().strip()
+    if v == '2m':
+        return {'knowdist': 1500000, 'icldist': 500000}
+    elif v == '4m':
+        return {'knowdist': 3000000, 'icldist': 1000000}
+    elif v.endswith('m'):
+        total = int(float(v[:-1]) * 1000000)
+        return {'knowdist': int(total * 0.75), 'icldist': int(total * 0.25)}
+    elif v.isdigit():
+        total = int(v)
+        return {'knowdist': int(total * 0.75), 'icldist': int(total * 0.25)}
+    return {'knowdist': 1500000, 'icldist': 500000}
 
 
 def fresh(path):
@@ -160,6 +177,15 @@ def tokenize(args):
         if len(prompt_ids) + len(answer) > args.max_length:
             excluded.append({'id': r['id'], 'reason': 'whole_record_overlength'})
             continue
+        if r['stage'] == 'knowdist' and getattr(args, 'rpr_filter', False):
+            words = r['response'].split()
+            rpr = len(r['response']) / max(1, len(r['prompt']))
+            if len(words) < 5 or rpr < 0.04:
+                excluded.append({'id': r['id'], 'reason': 'rpr_too_short'})
+                continue
+            if len(words) > 30 and (len(set(words)) / len(words)) < 0.30:
+                excluded.append({'id': r['id'], 'reason': 'rpr_repetitive'})
+                continue
         # Drop raw source_text from tokenized pool; final prompt/response remain unchanged.
         r = {k: v for k, v in r.items() if k != 'source_text'}
         r.update(input_ids=prompt_ids + answer, labels=[-100] * len(prompt_ids) + answer,
@@ -291,17 +317,34 @@ def select(args):
         expected_ids = {r['id'] for r in pool if r['stage'] == 'knowdist' and r['split'] == 'train'}
         if len(scores) != len(scored_rows) or set(scores) != expected_ids:
             raise ValueError('Score IDs do not exactly match KNOWDIST train candidates')
+    if getattr(args, 'token_budget', None):
+        b = parse_token_budget(args.token_budget)
+        args.know_tokens = b['knowdist']
+        args.icl_tokens = b['icldist']
     out = fresh(args.output)
     reports = {}
     for stage, budget, cap in [('knowdist', args.know_tokens, args.know_records),
                                ('icldist', args.icl_tokens, args.icl_records)]:
         candidates = [r for r in pool if r['stage'] == stage and r['split'] == 'train']
-        # Fixed ICLDIST selection in ALL methods, including the random control.
-        method = args.method if stage == 'knowdist' else 'coverage'
-        train, report = select_rows(candidates, method, budget, cap, args.seed,
-                                   scores, args.min_ifd, args.max_ifd)
-        if method == 'student' and report['missing_groups'] and not args.allow_missing_groups:
-            raise ValueError(f'Plan A lost groups: {report["missing_groups"]}; inspect interval or run B explicitly')
+        if stage == 'icldist' and getattr(args, 'disable_diversification', False):
+            candidates = [r for r in candidates if 'diversification' not in r.get('group', '').lower()
+                          and 'diversification' not in r.get('kind', '').lower()]
+        if stage == 'icldist' and getattr(args, 'stratified_icl', False):
+            dev_scores = None
+            if getattr(args, 'dev_scores_json', None) and Path(args.dev_scores_json).exists():
+                dev_scores = json.loads(Path(args.dev_scores_json).read_text())
+            train, report = select_rows_stfa(
+                candidates, budget, cap, args.seed,
+                dev_scores=dev_scores,
+                stfa_temp=getattr(args, 'stfa_temp', 1.0),
+                disable_diversification=getattr(args, 'disable_diversification', False)
+            )
+        else:
+            method = args.method if stage == 'knowdist' else 'coverage'
+            train, report = select_rows(candidates, method, budget, cap, args.seed,
+                                       scores, args.min_ifd, args.max_ifd)
+            if method == 'student' and report['missing_groups'] and not args.allow_missing_groups:
+                raise ValueError(f'Plan A lost groups: {report["missing_groups"]}; inspect interval or run B explicitly')
         reports[stage] = report
         stage_out = out / stage
         stage_out.mkdir()
@@ -355,6 +398,7 @@ def main():
     p.add_argument('--know-candidates', type=int, default=10000)
     p.add_argument('--icl-candidates', type=int, default=5000)
     p.add_argument('--per-group', type=int, default=1000)
+    p.add_argument('--rpr-filter', action='store_true', help='Filter knowdist noise using response-to-prompt ratio (RPR)')
     p.add_argument('--seed', type=int, default=42)
     p.set_defaults(func=tokenize)
     p = commands.add_parser('score')
@@ -375,6 +419,11 @@ def main():
     p.add_argument('--icl-tokens', type=int, default=500000)
     p.add_argument('--know-records', type=int, default=3500)
     p.add_argument('--icl-records', type=int, default=1500)
+    p.add_argument('--token-budget', help="Preset token budget like '2m' or '4m'")
+    p.add_argument('--stratified-icl', action='store_true', help="Enable Capability-Aware STFA for ICLDIST")
+    p.add_argument('--stfa-temp', type=float, default=1.0, help="Temperature for STFA gap allocation")
+    p.add_argument('--dev-scores-json', help="Path to JSON file with zero-shot dev scores per task (sc, multifaced, fsa)")
+    p.add_argument('--disable-diversification', action='store_true', help="Ablation: exclude diversification samples from ICLDIST")
     p.add_argument('--seed', type=int, default=42)
     p.set_defaults(func=select)
     args = parser.parse_args()

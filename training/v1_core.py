@@ -250,3 +250,109 @@ def steps_for_tokens(rows, target, batch_size, accumulation, seed):
                 epoch, offset, order = epoch + 1, 0, []
         steps += 1
     return steps, tokens
+
+
+def classify_icl_task(prompt, response, group):
+    """Categorize an ICLDIST sample into task taxonomy (sc, multifaced, fsa)."""
+    text = (str(prompt) + ' ' + str(response) + ' ' + str(group)).lower()
+    if any(k in text for k in ('[(', "[['", 'aspect category', 'aspect term', 'quadruple', 'tuple', 'opinion target', 'asqp', 'atsa', 'acsa', 'opener')):
+        return 'fsa'
+    elif any(k in text for k in ('emotion', 'irony', 'stance', 'joy', 'anger', 'sadness', 'optimism', 'multifaced', 'pstance', 'mams')):
+        return 'multifaced'
+    else:
+        return 'sc'
+
+
+def length_bin(token_count):
+    if token_count <= 128:
+        return 'short'
+    elif token_count <= 512:
+        return 'medium'
+    else:
+        return 'long'
+
+
+def select_rows_stfa(rows, token_budget, max_records, seed, dev_scores=None, stfa_temp=1.0, disable_diversification=False):
+    """Capability-Aware Stratified Task-Format Alignment (STFA) selection for ICLDIST.
+
+    Allocates token budget by zero-shot performance gap s_g:
+        pi_g = ((1 - s_g + 0.05) ** (1 / tau)) / sum_g' ((1 - s_g' + 0.05) ** (1 / tau))
+    """
+    if disable_diversification:
+        rows = [r for r in rows if 'diversification' not in r.get('group', '').lower() and 'diversification' not in r.get('kind', '').lower()]
+    if not rows:
+        raise ValueError('No eligible ICLDIST rows for STFA selection')
+
+    # Default zero-shot scores on clean Dev if not provided (sc high, multifaced medium, fsa low)
+    if dev_scores is None:
+        dev_scores = {'sc': 0.88, 'multifaced': 0.55, 'fsa': 0.15}
+
+    tau = max(0.1, float(stfa_temp))
+    tasks = ('sc', 'multifaced', 'fsa')
+    gaps = {t: max(0.01, 1.0 - float(dev_scores.get(t, 0.50)) + 0.05) for t in tasks}
+    weights_raw = {t: (gaps[t] ** (1.0 / tau)) for t in tasks}
+    total_w = sum(weights_raw.values())
+    task_proportions = {t: weights_raw[t] / total_w for t in tasks}
+
+    buckets = defaultdict(list)
+    for r in sorted(rows, key=lambda x: x['id']):
+        task = classify_icl_task(r.get('prompt', ''), r.get('response', ''), r.get('group', ''))
+        lbin = length_bin(len(r['input_ids']))
+        r['_stfa_group'] = f'{task}:{lbin}'
+        buckets[f'{task}:{lbin}'].append(r)
+
+    for k, v in buckets.items():
+        random.Random(f'{seed}:{k}').shuffle(v)
+
+    task_budgets = {t: int(token_budget * task_proportions[t]) for t in tasks}
+    rem = token_budget - sum(task_budgets.values())
+    if rem > 0:
+        max_task = max(tasks, key=lambda t: gaps[t])
+        task_budgets[max_task] += rem
+
+    selected = []
+    tokens = 0
+    group_tokens = Counter()
+
+    for task in tasks:
+        t_budget = task_budgets[task]
+        t_tokens = 0
+        bins = ('short', 'medium', 'long')
+        bin_keys = [f'{task}:{b}' for b in bins if f'{task}:{b}' in buckets and buckets[f'{task}:{b}']]
+        if not bin_keys:
+            continue
+        cursors = Counter()
+        while bin_keys and t_tokens < t_budget and len(selected) < max_records:
+            b_key = min(bin_keys, key=lambda k: (group_tokens[k], k))
+            chosen = None
+            while cursors[b_key] < len(buckets[b_key]):
+                r = buckets[b_key][cursors[b_key]]
+                cursors[b_key] += 1
+                size = len(r['input_ids'])
+                if t_tokens + size <= t_budget and tokens + size <= token_budget:
+                    chosen = r
+                    break
+            if chosen is None:
+                bin_keys.remove(b_key)
+                continue
+            selected.append(chosen)
+            size = len(chosen['input_ids'])
+            tokens += size
+            t_tokens += size
+            group_tokens[b_key] += size
+
+    if not selected:
+        raise ValueError('STFA selection produced 0 records; inspect candidate pool and budgets')
+
+    return selected, {
+        'method': 'stfa_stratified',
+        'tokens': tokens,
+        'token_budget': token_budget,
+        'unused_tokens': token_budget - tokens,
+        'records': len(selected),
+        'groups': dict(Counter(r.get('_stfa_group', r['group']) for r in selected)),
+        'group_tokens': dict(group_tokens),
+        'task_proportions': task_proportions,
+        'task_budgets': task_budgets,
+        'missing_groups': []
+    }

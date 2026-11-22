@@ -124,6 +124,90 @@ def prepare(args):
     print('Inspect preview.json, exclusions and group coverage before training.')
 
 
+def strip_think_tags(text):
+    """Clean model generation from thinking mode tags like <think>...</think>."""
+    import re
+    if not isinstance(text, str):
+        return text
+    cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    if '<think>' in cleaned:
+        cleaned = cleaned.split('<think>')[0]
+    return cleaned.strip()
+
+
+def activate_neftune(model, noise_alpha):
+    """Add NEFTune uniform noise to embedding during training (Jain et al., 2023)."""
+    import math
+    import torch
+    embeddings = model.get_input_embeddings()
+    def neftune_hook(module, inputs, output):
+        if module.training and noise_alpha > 0:
+            dims = torch.tensor(output.size(1) * output.size(2))
+            mag_norm = noise_alpha / torch.sqrt(dims.float())
+            output = output + torch.zeros_like(output).uniform_(-mag_norm.item(), mag_norm.item())
+        return output
+    embeddings.register_forward_hook(neftune_hook)
+
+
+def compute_sample_normalized_loss(logits, labels, source_stages, step, total_steps, replay_decay_str="0.2:0.05"):
+    """Sample-Normalized Decaying Dual-Objective Loss.
+
+    Normalizes per-sample CE by its own response token count, then applies cosine decay:
+        lambda_t = lambda_end + 0.5 * (lambda_start - lambda_end) * (1 + cos(pi * t / T))
+        L_t = (1 - lambda_t) * mean(L_icl) + lambda_t * mean(L_know)
+    """
+    import math
+    import torch
+    import torch.nn.functional as F
+
+    try:
+        parts = [float(x) for x in replay_decay_str.split(':')]
+        lam_start, lam_end = parts[0], parts[1]
+    except Exception:
+        lam_start, lam_end = 0.20, 0.05
+
+    t = min(max(0, step), total_steps)
+    T = max(1, total_steps)
+    lam_t = lam_end + 0.5 * (lam_start - lam_end) * (1.0 + math.cos(math.pi * t / T))
+
+    icl_losses, know_losses = [], []
+    for i, (row, target) in enumerate(zip(logits, labels)):
+        target_slice = target[1:]
+        pos = torch.where(target_slice != -100)[0]
+        if not pos.numel():
+            continue
+        sample_sum = row.new_zeros((), dtype=torch.float32)
+        for chunk in pos.split(128):
+            sample_sum = sample_sum + F.cross_entropy(row[chunk].float(), target_slice[chunk], reduction='sum')
+        sample_nll = sample_sum / float(pos.numel())
+
+        stage = source_stages[i] if i < len(source_stages) else 'icl'
+        if stage == 'know':
+            know_losses.append(sample_nll)
+        else:
+            icl_losses.append(sample_nll)
+
+    mean_icl = torch.stack(icl_losses).mean() if icl_losses else None
+    mean_know = torch.stack(know_losses).mean() if know_losses else None
+
+    if mean_icl is not None and mean_know is not None:
+        loss = (1.0 - lam_t) * mean_icl + lam_t * mean_know
+    elif mean_icl is not None:
+        loss = mean_icl
+    elif mean_know is not None:
+        loss = mean_know
+    else:
+        raise ValueError("Batch has no valid response targets")
+
+    return loss, {
+        'loss_icl': float(mean_icl.item()) if mean_icl is not None else 0.0,
+        'loss_know': float(mean_know.item()) if mean_know is not None else 0.0,
+        'lambda_t': float(lam_t),
+        'has_icl': mean_icl is not None,
+        'has_know': mean_know is not None
+    }
+
+
 def per_example_loss(logits, labels):
     """Response-only mean CE, chunked to avoid fp32 [batch, sequence, vocab]."""
     import torch
@@ -260,6 +344,8 @@ def train(args):
         model = get_peft_model(model, LoraConfig(
             task_type='CAUSAL_LM', r=args.rank, lora_alpha=args.rank * 2,
             lora_dropout=0., target_modules=target_mods))
+    if getattr(args, 'neftune_alpha', 0.0) > 0:
+        activate_neftune(model, args.neftune_alpha)
     model.print_trainable_parameters()
     optimizer = torch.optim.AdamW((p for p in model.parameters() if p.requires_grad),
                                  lr=args.learning_rate, weight_decay=0.01)
@@ -385,24 +471,36 @@ def train(args):
             labels = b.pop('labels')
             with torch.autocast('cuda', dtype=dtype):
                 output = model(**b, use_cache=False)
-                losses = per_example_loss(output.logits, labels)
-                weights = losses.new_tensor([controller.weights[r['train_group']] for r in rows])
-                loss = (losses * weights).mean() / args.grad_accum
+                if getattr(args, 'sample_normalized_loss', False):
+                    stages = [r.get('source_stage', 'icl') for r in rows]
+                    loss, loss_info = compute_sample_normalized_loss(
+                        output.logits, labels, stages, state['step'], args.steps,
+                        getattr(args, 'replay_decay', '0.2:0.05')
+                    )
+                    loss = loss / args.grad_accum
+                    losses = torch.tensor([loss_info['loss_icl']])
+                    last_loss_info = loss_info
+                else:
+                    losses = per_example_loss(output.logits, labels)
+                    weights = losses.new_tensor([controller.weights[r['train_group']] for r in rows])
+                    loss = (losses * weights).mean() / args.grad_accum
             if not torch.isfinite(loss):
                 raise FloatingPointError('Non-finite loss; stop and lower LR/check data/precision')
             scaler.scale(loss).backward()
             micro_losses.append(losses.detach().mean().item())
             state['train_tokens'] += sum(len(r['input_ids']) for r in rows)
             state['response_tokens'] += sum(r['response_tokens'] for r in rows)
-            del output, losses, loss, weights, labels, b
+            del output, losses, loss, labels, b
         scaler.unscale_(optimizer)
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), getattr(args, 'max_grad_norm', 0.5))
         old_scale = scaler.get_scale()
         scaler.step(optimizer)
         scaler.update()
         if scaler.get_scale() >= old_scale:
             scheduler.step()
             state['optimizer_updates'] += 1
+        else:
+            state['grad_scaler_skipped_steps'] = state.get('grad_scaler_skipped_steps', 0) + 1
         state['step'] += 1
         if state['step'] % args.log_every == 0 or state['step'] == args.steps:
             import gc
@@ -435,6 +533,22 @@ def train(args):
     write_json(out / 'summary.json', {'completed': True, 'mode': args.mode, 'model': manifest['model'], 'state': state,
                                     'weights': controller.weights,
                                     'note': 'Teacher-response CE is not benchmark accuracy/F1. Run SentiBench separately.'})
+    last_info = last_loss_info if 'last_loss_info' in locals() else {}
+    train_metrics = {
+        'completed': True,
+        'total_steps': state['step'],
+        'optimizer_updates': state['optimizer_updates'],
+        'grad_scaler_skipped_steps': state.get('grad_scaler_skipped_steps', 0),
+        'train_time_sec': state['elapsed_seconds'],
+        'peak_train_vram_gib': state['peak_vram_bytes'] / (1024**3),
+        'loss_icl': last_info.get('loss_icl', 0.0),
+        'loss_know': last_info.get('loss_know', 0.0),
+        'lambda_t': last_info.get('lambda_t', 0.05),
+        'gradient_share_know': last_info.get('lambda_t', 0.05),
+        'train_tokens': state['train_tokens'],
+        'response_tokens': state['response_tokens']
+    }
+    write_json(out / 'train_metrics.json', train_metrics)
 
 
 def export(args):
@@ -513,6 +627,14 @@ def main():
     t.add_argument('--resume', help='Own checkpoint directory; restores optimizer/scaler/RNG/controller/cursor')
     t.add_argument('--init_adapter', help='Own previous-stage adapter; new optimizer/scheduler, unlike resume')
     t.add_argument('--max_seconds', type=float, default=0., help='0: unlimited; save and stop at optimizer boundary')
+    t.add_argument('--sample-normalized-loss', action='store_true',
+                   help='Sample-Normalized Decaying Dual-Objective Loss to balance KNOWDIST/ICLDIST')
+    t.add_argument('--replay-decay', default='0.2:0.05',
+                   help='Decay range for KNOWDIST replay weight (e.g. 0.2:0.05)')
+    t.add_argument('--max_grad_norm', type=float, default=0.5,
+                   help='Maximum gradient norm clipping (default: 0.5)')
+    t.add_argument('--neftune-alpha', type=float, default=0.0,
+                   help='NEFTune noisy embedding scale alpha (e.g. 5.0)')
     t.set_defaults(func=train)
     e = commands.add_parser('export')
     e.add_argument('--run', required=True)

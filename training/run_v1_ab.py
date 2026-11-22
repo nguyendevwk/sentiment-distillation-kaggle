@@ -59,17 +59,30 @@ def stage_artifacts(directory):
 
 def commands(request, output):
     config, stages = request['config'], request['stages']
+    plan_cfg = config['plans'][request['plan']]
+    fork_s1 = request.get('fork_stage1')
     result = []
     for stage in ('knowdist', 'icldist'):
+        if stage == 'knowdist' and fork_s1:
+            continue
         args = [sys.executable, str(Path(__file__).with_name('train_distill.py')), 'train',
             '--prepared', stages[stage]['prepared'], '--output', str(Path(output) / stage),
             '--steps', str(stages[stage]['steps']), '--seed', str(request['seed']),
-            '--mode', config['plans'][request['plan']]['mode'], '--batch_size', str(config['batch_size']),
+            '--mode', plan_cfg['mode'], '--batch_size', str(config['batch_size']),
             '--grad_accum', str(config['grad_accum']), '--learning_rate', str(config['learning_rate']),
             '--rank', str(config['rank']), '--target_modules', config['target_modules'],
             '--probe_every', str(config['probe_every']), '--save_every', str(config['save_every'])]
+        if plan_cfg.get('sample_normalized_loss'):
+            args += ['--sample-normalized-loss']
+        if plan_cfg.get('replay_decay'):
+            args += ['--replay-decay', str(plan_cfg['replay_decay'])]
+        if plan_cfg.get('neftune_alpha'):
+            args += ['--neftune-alpha', str(plan_cfg['neftune_alpha'])]
+        if plan_cfg.get('max_grad_norm'):
+            args += ['--max_grad_norm', str(plan_cfg['max_grad_norm'])]
         if stage == 'icldist':
-            args += ['--init_adapter', str(Path(output) / 'knowdist' / 'adapter')]
+            adapter_path = fork_s1 if fork_s1 else str(Path(output) / 'knowdist' / 'adapter')
+            args += ['--init_adapter', adapter_path]
         result.append((stage, args))
     return result
 
@@ -82,6 +95,8 @@ def run(args):
     if selection['method'] != config['plans'][args.plan]['selection']:
         raise ValueError('Selected dataset does not match plan; explicit switch requires another prepared directory')
     request = build_request(args.prepared, config, args.plan, args.seed, args.pilot_steps)
+    if getattr(args, 'fork_stage1', None):
+        request['fork_stage1'] = str(Path(args.fork_stage1).resolve())
     output = Path(args.output).resolve()
     if args.dry_run:
         print(json.dumps({'request': request, 'commands': commands(request, output)}, indent=2))
@@ -148,7 +163,8 @@ def main():
     p.add_argument('--prepared', required=True)
     p.add_argument('--output', required=True)
     p.add_argument('--config', default=str(Path(__file__).parent.parent / 'configs/v1_ab.json'))
-    p.add_argument('--plan', choices=['A', 'B', 'R'], required=True)
+    p.add_argument('--plan', choices=['A', 'B', 'B0', 'D', 'F', 'BCTD', 'R'], required=True)
+    p.add_argument('--fork-stage1', help='Path to completed Stage 1 adapter to skip Stage 1 training')
     p.add_argument('--seed', type=int, default=42)
     p.add_argument('--max-seconds', type=float, default=28800)
     p.add_argument('--pilot-steps', type=int, default=0)
