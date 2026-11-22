@@ -49,10 +49,23 @@ def prepare(args):
     tokenizer = AutoTokenizer.from_pretrained(args.model, revision=revision)
     if tokenizer.eos_token_id is None or not tokenizer.chat_template:
         raise ValueError('Tokenizer requires chat template and EOS')
+    file_path = Path(args.file)
+    if not file_path.exists():
+        from huggingface_hub import hf_hub_download
+        print(f"Corpus file not found at {args.file}, downloading from Hugging Face hub...")
+        fname = file_path.name if file_path.name.endswith('.jsonl') else "Qwen3-32B_50k.jsonl"
+        downloaded = hf_hub_download(
+            repo_id="zhang-yice/sentiment-distillation-v2",
+            filename=fname,
+            repo_type="dataset",
+            revision=args.corpus_revision
+        )
+        file_path = Path(downloaded)
+        print(f"Corpus downloaded and resolved to: {file_path}")
     records, rejected, seen = [], [], set()
-    source_sha = file_hash(args.file)
+    source_sha = file_hash(file_path)
     fields = args.prompt_fields.split(',')
-    for line, obj in read_records(args.file):
+    for line, obj in read_records(file_path):
         record_id = f'{source_sha}:{line}'
         try:
             r = mapped_record(obj, fields, args.response_field, args.group_field, args.source_field)
@@ -87,6 +100,7 @@ def prepare(args):
                 stream.write(json.dumps(r, ensure_ascii=False) + '\n')
     tokenizer.save_pretrained(out / 'tokenizer')
     clean_config = {k: v for k, v in vars(args).items() if k != 'func'}
+    clean_config['file'] = str(file_path)
     manifest = {'config': clean_config, 'model': args.model, 'model_revision': revision,
                 'source_sha256': source_sha, 'corpus_revision': args.corpus_revision,
                 'tokenizer_template_sha256': digest(tokenizer.chat_template), 'group_mapping': mapping,
