@@ -27,7 +27,10 @@ def prepare_runtime(args):
     if args.model_name_or_path:
         model_path = args.model_name_or_path
     else:
-        mapping = json.loads(Path(__file__).with_name('model_name.json').read_text())
+        json_file = Path(__file__).with_name('model_name_kaggle.json')
+        if not json_file.exists():
+            json_file = Path(__file__).with_name('model_name.json')
+        mapping = json.loads(json_file.read_text())
         model_path = mapping.get(args.model_version, args.model_version)
         if not model_path:
             raise ValueError('Provide --model_name_or_path or --model_version')
@@ -169,3 +172,12 @@ class PredictionCache:
             temp = self.path.with_suffix(self.path.suffix + '.tmp')
             temp.write_text(json.dumps({'metadata': self.metadata, 'entries': self.entries}), encoding='utf-8')
             os.replace(temp, self.path)
+
+
+def save_result_kaggle(output_dir, exper_name, f1, acc, metadata=None):
+    result = (exper_name, {'f1': round(f1, 4), 'acc': round(acc, 4)})
+    if metadata is not None:
+        result[1]['metadata'] = metadata
+    os.makedirs(output_dir, exist_ok=True)
+    with open(os.path.join(output_dir, 'result.txt'), 'a', encoding='utf-8-sig') as f:
+        f.write(json.dumps(result) + '\n')

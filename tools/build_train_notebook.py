@@ -62,8 +62,12 @@ WORK = BASE / RUN_TAG / MODEL_TAG
 WORK.mkdir(parents=True, exist_ok=True)
 print('Work:', WORK)
 ''')
-bundle = {str(p): (ROOT / p).read_text() for p in
-          ['training/distill_core.py', 'training/train_distill.py', 'requirements-train-kaggle.txt']}
+bundle_files = [
+    'training/distill_core.py', 'training/train_distill.py', 'requirements-train-kaggle.txt',
+    'kaggle_evaluate.py', 'icl_multifaced_kaggle.py', 'fsa_kaggle.py',
+    'notebook_runtime.py', 'model_name_kaggle.json'
+]
+bundle = {p: (ROOT / p).read_text(encoding='utf-8') for p in bundle_files}
 code('BUNDLED = ' + repr(bundle) + '''
 for relative, source in BUNDLED.items():
     target = BASE / 'source' / relative
@@ -290,7 +294,38 @@ if EXPORT_MODE:
         raise ValueError('EXPORT_MODE must be a trained mode')
     run(['export', '--run', WORK / EXPORT_MODE, '--output', WORK / f'merged-{EXPORT_MODE}'],
         log=WORK / f'export-{EXPORT_MODE}.log')
+''')
+md('''
+## Đánh giá So sánh Model gốc (Before) vs Model sau Finetuning (After)
 
+Cell sau tự động chạy đánh giá trên bài kiểm thử chuẩn (mặc định `sc/imdb`, `sc/sst2`, 4-shot)
+để đo lường mức độ cải thiện trực tiếp của LoRA adapter so với mô hình gốc trước khi finetune.
+Kết quả được xuất ra dạng bảng đối chứng Before vs After và lưu tại `evaluation_comparison.json`.
+''')
+code('''
+# Đánh giá Before vs After
+EVAL_DATASETS = 'sc/imdb,sc/sst2'
+EVAL_BATCH_SIZE = 4
+EVAL_K_SHOT = 4
+ADAPTER_PATH = WORK / 'uniform' / 'adapter'
+
+eval_script = BASE / 'source/kaggle_evaluate.py'
+if ADAPTER_PATH.exists() and eval_script.exists():
+    eval_cmd = [
+        sys.executable, str(eval_script),
+        '--model', MODEL,
+        '--adapter', str(ADAPTER_PATH),
+        '--datasets', EVAL_DATASETS,
+        '--k_shot', str(EVAL_K_SHOT),
+        '--eval_batch_size', str(EVAL_BATCH_SIZE),
+        '--output_dir', str(WORK / 'eval_comparison')
+    ]
+    print("=== Đang chạy đánh giá so sánh Trước vs Sau Finetuning ===")
+    subprocess.run(eval_cmd, check=True)
+else:
+    print(f"Adapter chưa sẵn sàng tại {ADAPTER_PATH}; hãy hoàn tất bước train trước.")
+''')
+code('''
 # Portable run metadata and adapters; full checkpoints stay in WORK for Save Version.
 import zipfile
 archive = BASE / f'{RUN_TAG}-{MODEL_TAG}-artifacts.zip'

@@ -1,5 +1,3 @@
-from notebook_runtime import (add_runtime_arguments, prepare_runtime, load_model,
-    select_examples, configure_tokenizer, limit_prompts, run_metadata, PredictionCache)
 from tqdm import tqdm
 import argparse
 from utils import save_line_json, load_line_json, save_result
@@ -318,7 +316,7 @@ If any component is missing, use NULL as its placeholder. Please extract all op
 
 
 
-def cal_metric(results, f1, seed, subname, model_name_or_path, dataset, output_dir, k_shot, metadata=None):
+def cal_metric(results, f1, seed, subname, model_name_or_path, dataset, output_dir, k_shot):
     model_name = model_name_or_path.split('/')[-1]
     print(model_name)
     current_time = time.strftime('%Y_%m_%d_%H_%M_%S')
@@ -329,7 +327,7 @@ def cal_metric(results, f1, seed, subname, model_name_or_path, dataset, output_d
 
 
 
-    save_result(output_dir, file_name, f1, 0, metadata)
+    save_result(output_dir, file_name, f1, 0)
     save_json(results, output_path)
 
 
@@ -350,7 +348,7 @@ class DataCollator:
 
         else:
             kwargs['max_length'] = max_seq_length
-            kwargs['padding'] = True
+            kwargs['padding'] = 'max_length'
             kwargs['truncation'] = True
 
         batch_encodings = self.tokenizer(**kwargs)
@@ -359,7 +357,7 @@ class DataCollator:
     def __call__(self, examples):
 
         texts = [example['prompts'] for example in examples]
-        batch_encodings = self.tok(texts, self.max_seq_length)
+        batch_encodings = self.tok(texts, -1)
 
         input_ids = batch_encodings['input_ids']
         attention_mask = batch_encodings['attention_mask']
@@ -376,7 +374,8 @@ def get_dataloader(test_examples, mode, batch_size, shuffle, tokenizer):
         batch_size=batch_size,
         shuffle=shuffle,
         pin_memory=True,
-        num_workers=0,
+        prefetch_factor=8,
+        num_workers=1,
         collate_fn=DataCollator(
             tokenizer=tokenizer,
             max_seq_length=max_seq_length,
@@ -393,11 +392,11 @@ def test_dataloader(test_examples, eval_batch_size,tokenizer):
 
 
 # 从test.json 和 train.json 中加载数据
-def load_dataset(data_path, demo_split='train'):
+def load_dataset(data_path):
     test_file_name = os.path.join(data_path, 'test.json')
     test_examples = load_json(test_file_name)
 
-    demo_pool_file_name = os.path.join(data_path, demo_split + '.json')
+    demo_pool_file_name = os.path.join(data_path, 'train.json')
     demo_examples = load_json(demo_pool_file_name)
 
     raw_datasets = {
@@ -427,18 +426,16 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', required=True, )
     parser.add_argument('--subname', required=True, )
     parser.add_argument('--seed', required=True, type=int)
-    parser.add_argument('--model_name_or_path', default=None )
-    parser.add_argument('--model_version', default=None)
-    parser.add_argument('--max_seq_length', type=int, default=2048)
-    parser.add_argument('--data_prop', type=float, default=1)
-    parser.add_argument('--eval_batch_size', type=int, default=1)
-    parser.add_argument('--data_dir', default=os.path.join(os.path.dirname(__file__), 'datasets'))
-    parser.add_argument('--output_dir', default='./output')
-    parser.add_argument('--k_shot', type=int, default=4)
+    parser.add_argument('--model_name_or_path', default="/home/username/weights/Llama-3.2-1B-Instruct" )
+    parser.add_argument('--model_version', required=True)
+    parser.add_argument('--max_seq_length', default=-1 )
+    parser.add_argument('--data_prop', default=1)
+    parser.add_argument('--eval_batch_size', type=int, default=4 )
+    parser.add_argument('--data_dir')
+    parser.add_argument('--output_dir')
+    parser.add_argument('--k_shot', type=int, default=8)
 
-    add_runtime_arguments(parser)
     args = parser.parse_args()
-    prepare_runtime(args)
 
     dataset = args.dataset
     subname = args.subname
@@ -459,7 +456,7 @@ if __name__ == '__main__':
     torch.cuda.manual_seed(seed)
 
 
-    model_name_or_path = args.model_name_or_path
+    model_name_or_path = load_json('./model_name.json')[model_version]
     print('model name: ', model_name_or_path)
     print('-'*20+'Experiment Setup'+'-'*20)
     print('data_path: ', data_path)
@@ -467,7 +464,7 @@ if __name__ == '__main__':
     print('-' * 50)
 
 
-    raw_datasets = select_examples(load_dataset(data_path, args.demo_split), args)
+    raw_datasets = load_dataset(data_path)
 
 
 
@@ -477,40 +474,84 @@ if __name__ == '__main__':
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, padding_side='left')
     tokenizer.pad_token = tokenizer.eos_token
 
-
+    dataloader = test_dataloader(test_examples, eval_batch_size, tokenizer)
     
-    model = load_model(args)
-    configure_tokenizer(tokenizer, model, args, args.max_new_tokens)
-    max_seq_length = args.max_seq_length
-    truncated = limit_prompts(test_examples, tokenizer, max_seq_length)
-    metadata = run_metadata(args, raw_datasets, truncated)
-    cache = PredictionCache(args.resume_file, metadata)
-    pending = [example for example in test_examples if cache.get(example) is None]
-    dataloader = test_dataloader(pending, eval_batch_size, tokenizer)
-
+    model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
+                                                 device_map="auto",
+                                                 torch_dtype=torch.bfloat16,
+                                                 )
 
     print(model_name_or_path)
     model.eval()
 
-    with torch.inference_mode():
-        for batch in tqdm(dataloader):
-            input_ids = batch['input_ids'].to(model.device)
-            generated_ids = model.generate(
-                input_ids,
-                attention_mask=batch['attention_mask'].to(model.device),
-                max_new_tokens=args.max_new_tokens,
-                num_beams=1, num_return_sequences=1, do_sample=False,
-                pad_token_id=tokenizer.pad_token_id,
-            )
-            # Decode only new tokens, independent of prompt truncation and shot count.
-            generateds = tokenizer.batch_decode(
-                generated_ids[:, input_ids.shape[1]:], skip_special_tokens=True)
-            for example, prediction in zip(batch['examples'], generateds):
-                cache.put(example, prediction.strip())
-            cache.flush()
-            del generated_ids, input_ids
+    test_step_outputs = []
 
-    outputs = [(example, cache.get(example)) for example in test_examples]
+
+
+    validation_step_outputs = []
+    import re
+
+    def extract_labels_from_text(text, k_shot):
+        # 正则表达式匹配所有 Label 后面的内容，直到下一个 Sentence 或文本结尾或换行符
+        pattern = r"Label:\s*(.*?)(?=\s*(?=Sentence:|\n|$))"  # 匹配 Label 后面的内容直到下一个 Sentence 或换行符或文本结尾
+        matches = re.findall(pattern, text, re.DOTALL)
+        
+        return matches[k_shot]
+
+
+
+    for batch in tqdm(dataloader):
+
+        generated_ids = model.generate(
+            batch['input_ids'].to('cuda'),
+            attention_mask=batch['attention_mask'].to('cuda'),
+            max_new_tokens=150,
+            num_beams=1,
+            num_return_sequences=1,
+            do_sample=False
+        )
+        generateds = tokenizer.batch_decode(
+            generated_ids, skip_special_tokens=True
+        )
+
+
+        extracted_generateds = []
+        for item in generateds:
+            
+
+            print('-'*100)
+            print('extracted item:')
+            extracted_text = extract_labels_from_text(item, k_shot)
+            extracted_generateds.append(extracted_text)
+            print(extracted_text)
+            print('-'*100)
+
+
+        validation_step_outputs.append(
+            {
+            'examples': batch['examples'],
+            'predictions': extracted_generateds
+            }
+        )
+        
+
+    
+
+
+    
+
+    outputs = []
+
+
+    for output in validation_step_outputs:
+        examples = output['examples']
+        predictions = output['predictions']
+        for example, prediction in zip(examples, predictions):
+            outputs.append((example, prediction))
+
+
+    
+
 
     current_results = []
 
@@ -540,4 +581,4 @@ if __name__ == '__main__':
     
     
     
-    cal_metric(outputs,f1_scores, seed, subname, model_name_or_path, dataset, output_dir, k_shot, metadata)
+    cal_metric(outputs,f1_scores, seed, subname, model_name_or_path, dataset, output_dir, k_shot )

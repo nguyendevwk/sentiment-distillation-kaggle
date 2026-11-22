@@ -159,8 +159,9 @@ else:
 ''')
 
 files = [ROOT / name for name in ('fsa.py', 'icl_multifaced.py', 'utils.py', 'parse.py',
+         'fsa_kaggle.py', 'icl_multifaced_kaggle.py', 'parse_kaggle.py', 'kaggle_evaluate.py',
          'notebook_runtime.py', 'check_notebook_environment.py', 'requirements-notebook.txt',
-         'requirements-notebook-py313.txt', 'model_name.json')]
+         'requirements-notebook-py313.txt', 'model_name.json', 'model_name_kaggle.json')]
 files += sorted((ROOT / 'parse_utils').glob('*.py'))
 sources = {str(p.relative_to(ROOT)): p.read_text() for p in files}
 markdown('''

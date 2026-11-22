@@ -5,11 +5,8 @@ from tqdm import trange
 import random
 
 
-def save_result(output_dir, exper_name, f1, acc, metadata=None):
+def save_result(output_dir, exper_name, f1, acc):
     result = (exper_name,{'f1':round(f1, 4), 'acc':round(acc, 4)})
-    if metadata is not None:
-        result[1]['metadata'] = metadata
-    os.makedirs(output_dir, exist_ok=True)
     with open(os.path.join(output_dir,'result.txt'), 'a', encoding='utf-8-sig') as f:
         data = json.dumps(result)
         f.write(data)

@@ -1,5 +1,3 @@
-from notebook_runtime import (add_runtime_arguments, prepare_runtime, load_model,
-    select_examples, configure_tokenizer, limit_prompts, run_metadata, PredictionCache)
 from tqdm import tqdm
 import argparse
 from utils import save_line_json, load_line_json, save_result
@@ -13,6 +11,7 @@ from sklearn.metrics import f1_score, accuracy_score, classification_report
 import datetime
 import time
 import os
+from peft import PeftModel
 
 
 id_to_label = {
@@ -28,15 +27,30 @@ id_to_label = {
 }
 
 
-def get_label_list(tokenizer, dataset):
-    ids = [tokenizer(label, add_special_tokens=False)['input_ids'][0]
-           for label in id_to_label[dataset]]
-    if len(set(ids)) != len(ids):
-        raise ValueError('Label first tokens collide for this tokenizer; use a compatible model or implement full-label scoring.')
-    return ids
+def get_label_list(model_name_or_path):
+
+    def _get_verbalizer(model_name_or_path, labels):
+        tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+        tokenizer.pad_token = tokenizer.eos_token
+        v = []
+        for label in labels:
+            token_ids = tokenizer(label, add_special_tokens=False)["input_ids"]
+            v.append(token_ids[0])
+        return v
+        
 
 
-def cal_metric(results, y_true, y_pred, seed, subname, model_name_or_path, dataset, output_dir, k_shot, metadata=None):
+
+    label_to_id = {}
+    for dataset,labels in id_to_label.items():
+        ids = _get_verbalizer(model_name_or_path, labels)
+        label_to_id[dataset] = ids
+
+    return label_to_id
+
+
+
+def cal_metric(results, y_true, y_pred, seed, subname, model_name_or_path, dataset, output_dir, k_shot):
     model_name = model_name_or_path.split('/')[-1]
     print(model_name)
     current_time = time.strftime('%Y_%m_%d_%H_%M_%S')
@@ -52,7 +66,7 @@ def cal_metric(results, y_true, y_pred, seed, subname, model_name_or_path, datas
     print(f'f1: {f1:.4f} | accuracy: {accuracy:.4f}\n')
 
 
-    save_result(output_dir, file_name, f1, accuracy, metadata)
+    save_result(output_dir, file_name, f1, accuracy)
     save_json(results, output_path)
 
 
@@ -73,7 +87,7 @@ class DataCollator:
 
         else:
             kwargs['max_length'] = max_seq_length
-            kwargs['padding'] = True
+            kwargs['padding'] = 'max_length'
             kwargs['truncation'] = True
 
         batch_encodings = self.tokenizer(**kwargs)
@@ -82,7 +96,7 @@ class DataCollator:
     def __call__(self, examples):
 
         texts = [example['prompts'] for example in examples]
-        batch_encodings = self.tok(texts, self.max_seq_length)
+        batch_encodings = self.tok(texts, -1)
 
         input_ids = batch_encodings['input_ids']
         attention_mask = batch_encodings['attention_mask']
@@ -99,7 +113,8 @@ def get_dataloader(test_examples, mode, batch_size, shuffle, tokenizer):
         batch_size=batch_size,
         shuffle=shuffle,
         pin_memory=True,
-        num_workers=0,
+        prefetch_factor=8,
+        num_workers=1,
         collate_fn=DataCollator(
             tokenizer=tokenizer,
             max_seq_length=max_seq_length,
@@ -151,11 +166,11 @@ def construct_prompt_pstance(prompt, test_examples, demo_pool, k_shot):
 
 
 
-def load_dataset(data_path, demo_split='train'):
+def load_dataset(data_path):
     test_file_name = os.path.join(data_path, 'test.json')
     test_examples = load_json(test_file_name)
 
-    demo_pool_file_name = os.path.join(data_path, demo_split + '.json')
+    demo_pool_file_name = os.path.join(data_path, 'train.json')
     demo_examples = load_json(demo_pool_file_name)
 
     raw_datasets = {
@@ -185,18 +200,16 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', required=True, )
     parser.add_argument('--subname', required=True, )
     parser.add_argument('--seed', required=True, type=int)
-    parser.add_argument('--model_name_or_path', default=None )
-    parser.add_argument('--model_version', default=None)
-    parser.add_argument('--max_seq_length', type=int, default=2048)
-    parser.add_argument('--data_prop', type=float, default=1)
-    parser.add_argument('--eval_batch_size', type=int, default=1)
-    parser.add_argument('--data_dir', default=os.path.join(os.path.dirname(__file__), 'datasets'))
-    parser.add_argument('--output_dir', default='./output')
-    parser.add_argument('--k_shot', type=int, default=4)
+    parser.add_argument('--model_name_or_path', default="/home/username/weights/Llama-3.2-1B-Instruct" )
+    parser.add_argument('--model_version', required=True)
+    parser.add_argument('--max_seq_length', default=-1 )
+    parser.add_argument('--data_prop', default=1)
+    parser.add_argument('--eval_batch_size', type=int, default=4 )
+    parser.add_argument('--data_dir')
+    parser.add_argument('--output_dir')
+    parser.add_argument('--k_shot', type=int, default=8)
 
-    add_runtime_arguments(parser)
     args = parser.parse_args()
-    prepare_runtime(args)
 
     dataset = args.dataset
     subname = args.subname
@@ -217,7 +230,7 @@ if __name__ == '__main__':
     torch.cuda.manual_seed(seed)
 
 
-    model_name_or_path = args.model_name_or_path
+    model_name_or_path = load_json('./model_name.json')[model_version]
 
     print('-'*20+'Experiment Setup'+'-'*20)
     print('data_path: ', data_path)
@@ -239,7 +252,7 @@ if __name__ == '__main__':
             """Please perform Sentiment Analysis task. Given the sentence, assign a sentiment polarity label from ['negative', 'positive']. Return label only without any other text.""",
         'sc/sst2':
             """Please perform Sentiment Analysis task. Given the sentence, assign a sentiment polarity label from ['negative', 'positive']. Return label only without any other text.""",
-        'sc/yelp2':
+        'sc/yelp2': 
             """Please perform Sentiment Analysis task. Given the sentence, assign a sentiment polarity label from ['negative', 'positive']. Return label only without any other text.""",
         'sc/twitter':
             """Please perform Sentiment Analysis task. Given the sentence, assign a sentiment polarity label from ['negative', 'positive', 'neutral']. Return label only without any other text.""",
@@ -248,7 +261,7 @@ if __name__ == '__main__':
 
 
 
-    raw_datasets = select_examples(load_dataset(data_path, args.demo_split), args)
+    raw_datasets = load_dataset(data_path)
 
     if dataset == 'multifaced/pstance':
         test_examples = construct_prompt_pstance(prompts[dataset], raw_datasets['test'], raw_datasets['demo'], k_shot)
@@ -262,45 +275,77 @@ if __name__ == '__main__':
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, padding_side='left')
     tokenizer.pad_token = tokenizer.eos_token
 
-
-
-    model = load_model(args)
-    configure_tokenizer(tokenizer, model, args, 1)
-    max_seq_length = args.max_seq_length
-    truncated = limit_prompts(test_examples, tokenizer, max_seq_length)
-    metadata = run_metadata(args, raw_datasets, truncated)
-    cache = PredictionCache(args.resume_file, metadata)
-    pending = [example for example in test_examples if cache.get(example) is None]
-    dataloader = test_dataloader(pending, eval_batch_size, tokenizer)
-
-
+    dataloader = test_dataloader(test_examples, eval_batch_size, tokenizer)
+    
+    model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
+                                                 device_map="auto",
+                                                 torch_dtype=torch.bfloat16
+                                                 )
+    
 
 
 
     model.eval()
 
-    label_ids = get_label_list(tokenizer, dataset)
-    results = []
-    with torch.inference_mode():
-        for batch in tqdm(dataloader):
-            # Same first-token decision rule as the original evaluator; no KV cache.
-            output = model(
-                input_ids=batch['input_ids'].to(model.device),
-                attention_mask=batch['attention_mask'].to(model.device),
-                use_cache=False,
-            )
-            scores = output.logits[:, -1, label_ids].float().cpu()
-            for example, score in zip(batch['examples'], scores):
-                cache.put(example, {'prediction': id_to_label[dataset][score.argmax().item()].strip(),
-                                    'prediction_score': score.tolist()})
-            cache.flush()
-            del output, scores
+    test_step_outputs = []
 
-    for example in test_examples:
-        result = dict(example)
-        result.update(cache.get(example))
-        results.append(result)
-    labels = [example['label'].lower() for example in results]
-    predictions = [example['prediction'] for example in results]
-    cal_metric(results, labels, predictions, seed, subname, model_name_or_path,
-               dataset, output_dir, k_shot, metadata)
+    label_list = get_label_list(model_name_or_path)
+    print("label_list is: ", label_list)
+
+    aa = []
+    predictions = []
+    labels = []
+
+    for batch in tqdm(dataloader):
+
+        
+        output = model.generate(
+            batch['input_ids'].to('cuda'),
+            attention_mask=batch['attention_mask'].to('cuda')
+            , max_new_tokens=2, do_sample=False, output_scores=True, return_dict_in_generate=True
+        )
+        
+        
+
+        scores = output.scores[0].cpu()
+
+        # --------------------------- #
+
+        tmp_scores = scores.argmax(-1)
+
+        for score in tmp_scores:
+            aa.append(score.item())
+        # --------------------------- #
+
+        scores = scores[:, label_list[dataset]]
+        class_scores = scores
+        scores = scores.argmax(-1)
+        dict = { 'examples': batch['examples'],
+                'predictions': scores,
+                 'class_scores':class_scores
+                 }
+        test_step_outputs.append(dict)
+
+
+    print('label list is: ')
+    print(label_list[dataset])
+    print('all next most probable token set is: ')
+    print(Counter(aa))
+
+    predictions = []
+    labels = []
+    
+    
+    results = []
+    for output in test_step_outputs:
+        for example, prediction, score in zip(output['examples'], output['predictions'], output['class_scores']):
+            labels.append(example['label']                          .lower())
+            predictions.append(id_to_label[dataset][prediction].strip())
+    
+    
+            result = example
+            result['prediction'] = id_to_label[dataset][prediction].strip()
+            result['prediction_score'] = score.tolist()
+            results.append(result)
+    
+    cal_metric(results,labels, predictions, seed, subname, model_name_or_path, dataset, output_dir, k_shot )
