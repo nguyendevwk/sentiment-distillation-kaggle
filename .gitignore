@@ -17,6 +17,4 @@ environment-report.json
 *.checkpoint.json
 *.checkpoint.json.tmp
 *.log
-docs/research_handbook.md
-docs/research_log.md
-docs/*.pdf
+docs/
