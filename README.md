@@ -1,5 +1,33 @@
 # Targeted Distillation for Sentiment Analysis
 
+Current coursework target: a reduced **v1 KNOWDIST → ICLDIST** experiment within
+the user's 12-hour Kaggle session limit. The new
+[standalone v1 A/B notebook](notebooks/Sentiment_Distillation_V1_AB_Kaggle.ipynb)
+and [instructions](training/V1_AB.md) implement student-scored selection (A),
+coverage-only fallback (B), and random control (R) with shared development data,
+fixed ICLDIST and separate resumable runs. CPU-only checks pass; GPU training
+and benchmark quality are not yet validated for this v1 pipeline. Full-data
+training is not required. The older training notebook below remains the **v2 pilot**.
+
+For clone-and-run on Kaggle, use the [CLI pilot launcher](tools/run_kaggle_pilot.py):
+
+```python
+!python /kaggle/working/sentiment-v1-ab-pilot/tools/run_kaggle_pilot.py --plan B --steps 50 --eval-samples 64 --mapping-confirmed --work /kaggle/working/v1-pilot-01
+```
+
+Run this after cloning the branch containing the launcher into the indicated
+directory. It downloads v1, prepares B/R, evaluates the base and trained adapter
+on a seeded **validation** subset (SST-2/emotion), runs both training stages,
+and saves `report-B.json`, `report-B.md` and logs under `--work`. It measures
+batch-1 forward time/peak GPU memory after warm-up. ASQP is excluded from this
+pilot pending audit. Rerun the same command/config to resume; change `--plan A`
+for scoring-based selection, or `--plan R` for the random control. A/B switching
+uses development evidence, not final test. No package installation is automatic.
+
+See the local
+[current handbook](docs/research_handbook.md) and
+[implementation status](docs/PROJECT_STATUS.md); `docs/` is currently Git-ignored.
+
 Research plan (Vietnamese): [Student dưới 1B với corpus teacher công bố](docs/research-plan-sentiment-sub1b.md).
 
 ## Kaggle training pilot (Qwen3)

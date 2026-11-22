@@ -1,5 +1,10 @@
 # Kaggle distillation pilot
 
+For the new v1 two-stage A/B workflow, use [V1_AB.md](V1_AB.md) and
+`notebooks/Sentiment_Distillation_V1_AB_Kaggle.ipynb`. The instructions below
+describe the older v2 pilot. The v1 pipeline has CPU-only invariant checks;
+its GPU execution and benchmark results still need a Kaggle pilot.
+
 Upload `notebooks/Sentiment_Distillation_Train_Kaggle.ipynb` to Kaggle, enable GPU + Internet,
 and run cells in order. The notebook embeds both Python modules and requirements; no repository
 clone or GitHub token is needed. It installs the train libraries on Kaggle after a pip dry-run

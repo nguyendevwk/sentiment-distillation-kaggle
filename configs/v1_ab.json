@@ -1,0 +1,23 @@
+{
+  "protocol": "v1-ab-r1",
+  "batch_size": 1,
+  "grad_accum": 8,
+  "learning_rate": 0.0001,
+  "rank": 16,
+  "target_modules": "q_proj,k_proj,v_proj,o_proj",
+  "probe_every": 25,
+  "save_every": 50,
+  "train_tokens": {"knowdist": 1500000, "icldist": 500000},
+  "plans": {
+    "R": {"selection": "random", "mode": "uniform"},
+    "A": {"selection": "student", "mode": "uniform"},
+    "B": {"selection": "coverage", "mode": "uniform"}
+  },
+  "switch_policy": {
+    "selection_split": "probe",
+    "independent_report_split": "holdout",
+    "criteria": "Choose on predeclared dev metrics and total score+train cost; test must not choose A/B.",
+    "failure": "If A scoring fails, stays incomplete, loses group coverage or exceeds scoring budget, run B explicitly. Never mix checkpoints or silently substitute data.",
+    "scope": "Pilot controls, not validated hyperparameters or a novelty claim. Both plans keep fixed ICLDIST data."
+  }
+}

@@ -11,6 +11,7 @@ from importlib.metadata import version
 import json
 from pathlib import Path
 import random
+import sys
 import time
 
 from distill_core import (GroupWeights, digest, file_hash, mapped_record, read_records,
@@ -188,8 +189,10 @@ def train(args):
         raise ValueError('This pilot supports one process/GPU; do not launch with torchrun')
     if min(args.steps, args.batch_size, args.grad_accum, args.probe_every, args.save_every, args.log_every, args.rank) < 1:
         raise ValueError('steps, batch, accumulation and intervals must be positive')
-    if args.learning_rate <= 0 or not 0 <= args.warmup_ratio <= 1:
+    if args.learning_rate <= 0 or not 0 <= args.warmup_ratio <= 1 or args.max_seconds < 0:
         raise ValueError('Invalid learning rate/warmup')
+    # When resuming stage two, init_adapter is retained as hashed ancestry in
+    # identity; checkpoint weights below take precedence over initialization.
     prepared, out = Path(args.prepared), Path(args.output)
     manifest = json.loads((prepared / 'manifest.json').read_text())
     for split, expected in manifest['split_hashes'].items():
@@ -205,15 +208,26 @@ def train(args):
     set_seed(args.seed)
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.benchmark = False
-    bf16 = torch.cuda.is_bf16_supported()
+    bf16 = torch.cuda.get_device_capability(0)[0] >= 8 and torch.cuda.is_bf16_supported()
     dtype = torch.bfloat16 if bf16 else torch.float16
     versions = {p: version(p) for p in ('torch', 'transformers', 'peft', 'accelerate', 'numpy')}
     if args.four_bit:
         versions['bitsandbytes'] = version('bitsandbytes')
-    config = {k: v for k, v in vars(args).items() if k not in ('output', 'resume', 'func')}
+    config = {k: v for k, v in vars(args).items() if k not in ('output', 'resume', 'func', 'max_seconds')}
+    if args.init_adapter:
+        adapter_path = Path(args.init_adapter)
+        parent_config = json.loads((adapter_path / 'adapter_config.json').read_text())
+        if parent_config.get('base_model_name_or_path') != manifest['model']:
+            raise ValueError('Initial adapter base model differs from prepared model')
+        if parent_config.get('r') != args.rank or parent_config.get('lora_alpha') != args.rank * 2:
+            raise ValueError('Initial adapter rank/alpha differs')
+        parent_files = {p.name: file_hash(p) for p in sorted(adapter_path.iterdir()) if p.is_file()}
+        if not any(name.endswith(('.safetensors', '.bin')) for name in parent_files):
+            raise ValueError('Initial adapter has no weight file')
+        config['init_adapter_hashes'] = parent_files
     identity = {'config': config, 'manifest_sha256': file_hash(prepared / 'manifest.json'),
                 'source_sha256': digest([file_hash(Path(__file__)), file_hash(Path(__file__).with_name('distill_core.py'))]),
-                'versions': versions, 'gpu': torch.cuda.get_device_name(0), 'dtype': str(dtype)}
+                'versions': versions, 'python': sys.version, 'gpu': torch.cuda.get_device_name(0), 'dtype': str(dtype)}
     if out.exists() and any(out.iterdir()) and not args.resume:
         raise ValueError('Output is not empty. Use --resume or choose a new run directory.')
     checkpoint = None
@@ -238,8 +252,9 @@ def train(args):
     else:
         model.gradient_checkpointing_enable()
         model.enable_input_require_grads()
-    if checkpoint:
-        model = PeftModel.from_pretrained(model, checkpoint / 'adapter', is_trainable=True)
+    if checkpoint or args.init_adapter:
+        model = PeftModel.from_pretrained(model, checkpoint / 'adapter' if checkpoint else args.init_adapter,
+                                         is_trainable=True)
     else:
         target_mods = [m.strip() for m in args.target_modules.split(',') if m.strip()]
         model = get_peft_model(model, LoraConfig(
@@ -317,6 +332,13 @@ def train(args):
             stream.write(json.dumps({'step': state['step'], **value}) + '\n')
         print(json.dumps({'step': state['step'], **value}), flush=True)
 
+    def update_controller(losses):
+        # Shared dev contains all groups even when a selector drops some from
+        # train. Report all losses, but only train groups have controller weights.
+        supported = {g: value for g, value in losses.items() if g in counts}
+        if supported:
+            controller.update(supported)
+
     def save():
         torch.cuda.synchronize()
         state['elapsed_seconds'] = prior_elapsed + time.monotonic() - start
@@ -338,7 +360,7 @@ def train(args):
 
     if not checkpoint:
         initial = measure('probe')
-        controller.update(initial)
+        update_controller(initial)
         log({'event': 'initial_probe', 'probe_loss': initial, 'weights': controller.weights,
              'holdout_loss': measure('holdout')})
     model.train()
@@ -396,14 +418,21 @@ def train(args):
         if state['step'] % args.probe_every == 0 or state['step'] == args.steps:
             losses = measure('probe')
             if state['step'] >= args.warmup_steps:
-                controller.update(losses)
+                update_controller(losses)
             log({'event': 'probe', 'probe_loss': losses, 'weights': controller.weights,
                  'holdout_loss': measure('holdout')})
         if state['step'] % args.save_every == 0 or state['step'] == args.steps:
             save()
+        if args.max_seconds and time.monotonic() - start >= args.max_seconds and state['step'] < args.steps:
+            if state['step'] % args.save_every:
+                save()
+            write_json(out / 'summary.json', {'completed': False, 'mode': args.mode, 'model': manifest['model'],
+                'state': state, 'weights': controller.weights, 'note': 'Time budget reached at accumulation boundary; resume latest checkpoint.'})
+            print('Stage paused at an optimizer boundary. Restore latest full checkpoint to resume.', flush=True)
+            return
     model.save_pretrained(out / 'adapter')
     tokenizer.save_pretrained(out / 'adapter')
-    write_json(out / 'summary.json', {'mode': args.mode, 'model': manifest['model'], 'state': state,
+    write_json(out / 'summary.json', {'completed': True, 'mode': args.mode, 'model': manifest['model'], 'state': state,
                                     'weights': controller.weights,
                                     'note': 'Teacher-response CE is not benchmark accuracy/F1. Run SentiBench separately.'})
 
@@ -482,6 +511,8 @@ def main():
     t.add_argument('--seed', type=int, default=42)
     t.add_argument('--four_bit', action='store_true')
     t.add_argument('--resume', help='Own checkpoint directory; restores optimizer/scaler/RNG/controller/cursor')
+    t.add_argument('--init_adapter', help='Own previous-stage adapter; new optimizer/scheduler, unlike resume')
+    t.add_argument('--max_seconds', type=float, default=0., help='0: unlimited; save and stop at optimizer boundary')
     t.set_defaults(func=train)
     e = commands.add_parser('export')
     e.add_argument('--run', required=True)

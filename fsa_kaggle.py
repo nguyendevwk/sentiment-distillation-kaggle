@@ -394,8 +394,8 @@ def test_dataloader(test_examples, eval_batch_size,tokenizer):
 
 
 # 从test.json 和 train.json 中加载数据
-def load_dataset(data_path, demo_split='train'):
-    test_file_name = os.path.join(data_path, 'test.json')
+def load_dataset(data_path, demo_split='train', eval_split='test'):
+    test_file_name = os.path.join(data_path, eval_split + '.json')
     test_examples = load_json(test_file_name)
 
     demo_pool_file_name = os.path.join(data_path, demo_split + '.json')
@@ -468,7 +468,7 @@ if __name__ == '__main__':
     print('-' * 50)
 
 
-    raw_datasets = select_examples(load_dataset(data_path, args.demo_split), args)
+    raw_datasets = select_examples(load_dataset(data_path, args.demo_split, args.eval_split), args)
 
 
 

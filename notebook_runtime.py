@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import random
 import warnings
 
 
@@ -13,6 +14,10 @@ def add_runtime_arguments(parser):
     parser.add_argument('--load_in_4bit', action='store_true')
     parser.add_argument('--max_samples', type=int, default=0, help='0: all; otherwise first N test examples')
     parser.add_argument('--demo_split', choices=['train', 'val'], default='train')
+    parser.add_argument('--eval_split', choices=['test', 'val'], default='test')
+    parser.add_argument('--sample_strategy', choices=['first', 'random'], default='first')
+    parser.add_argument('--model_revision', default=None)
+    parser.add_argument('--measure_inference', action='store_true', help='Classification timing after one warm-up batch')
     parser.add_argument('--max_new_tokens', type=int, default=150)
     parser.add_argument('--resume_file', help='Atomic prediction checkpoint; use a persistent output path')
     parser.add_argument('--adapter', default=None, help='Path to PEFT adapter checkpoint directory')
@@ -20,6 +25,12 @@ def add_runtime_arguments(parser):
 
 def prepare_runtime(args):
     import torch
+    import sys
+    evaluator = Path(sys.argv[0]).name
+    if getattr(args, 'eval_split', 'test') != 'test' and evaluator not in ('icl_multifaced_kaggle.py', 'fsa_kaggle.py'):
+        raise ValueError('--eval_split is supported by *_kaggle.py evaluators only')
+    if getattr(args, 'measure_inference', False) and evaluator != 'icl_multifaced_kaggle.py':
+        raise ValueError('--measure_inference currently supports icl_multifaced_kaggle.py only')
     if args.eval_batch_size < 1 or args.k_shot < 0 or args.max_samples < 0:
         raise ValueError('batch_size must be positive; k_shot and max_samples must be nonnegative')
     if args.max_seq_length != -1 and args.max_seq_length < 1:
@@ -43,8 +54,9 @@ def prepare_runtime(args):
         raise ValueError('4-bit evaluation requires an available CUDA GPU')
     dtype = args.dtype
     if dtype == 'auto':
-        dtype = ('bfloat16' if torch.cuda.is_bf16_supported() else 'float16') if torch.cuda.is_available() else 'float32'
-    if dtype == 'bfloat16' and (not torch.cuda.is_available() or not torch.cuda.is_bf16_supported()):
+        native_bf16 = torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] >= 8 and torch.cuda.is_bf16_supported()
+        dtype = ('bfloat16' if native_bf16 else 'float16') if torch.cuda.is_available() else 'float32'
+    if dtype == 'bfloat16' and (not torch.cuda.is_available() or torch.cuda.get_device_capability(0)[0] < 8 or not torch.cuda.is_bf16_supported()):
         raise ValueError('This GPU does not support BF16; use --dtype auto or float16')
     if not torch.cuda.is_available() and dtype == 'float16':
         raise ValueError('Use float32 for CPU evaluation')
@@ -79,6 +91,8 @@ def load_model(args):
     import torch
     from transformers import AutoModelForCausalLM, BitsAndBytesConfig
     options = dict(torch_dtype=getattr(torch, args.resolved_dtype), low_cpu_mem_usage=True)
+    if getattr(args, 'model_revision', None):
+        options['revision'] = args.model_revision
     if torch.cuda.is_available():
         # One GPU avoids accidental CPU offload or combining incompatible notebook GPUs.
         options['device_map'] = {'': 0}
@@ -101,7 +115,10 @@ def select_examples(raw, args):
     count = max(1, int(len(raw['test']) * args.data_prop)) if raw['test'] else 0
     if args.max_samples:
         count = min(count, args.max_samples)
-    raw['test'] = raw['test'][:count]
+    if getattr(args, 'sample_strategy', 'first') == 'random':
+        raw['test'] = random.Random(args.seed).sample(raw['test'], count)
+    else:
+        raw['test'] = raw['test'][:count]
     if not raw['test']:
         raise ValueError('Test split is empty')
     if args.k_shot > len(raw['demo']):
@@ -150,14 +167,23 @@ def run_metadata(args, raw, truncated):
     settings = {k: getattr(args, k) for k in (
         'model_name_or_path', 'k_shot', 'max_seq_length', 'max_samples', 'data_prop',
         'demo_split', 'resolved_dtype', 'load_in_4bit', 'max_new_tokens', 'eval_batch_size')}
+    settings.update({k: getattr(args, k, None) for k in
+                     ('eval_split', 'sample_strategy', 'model_revision', 'adapter', 'measure_inference')})
+    adapter_hashes = None
+    if getattr(args, 'adapter', None):
+        adapter_path = Path(args.adapter)
+        adapter_hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                          for p in sorted(adapter_path.iterdir()) if p.suffix in ('.json', '.safetensors', '.bin')}
     fingerprint = hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()
     source_files = [Path(__file__), Path(__file__).with_name('fsa.py'),
-                    Path(__file__).with_name('icl_multifaced.py'), Path(__file__).with_name('utils.py')]
+                    Path(__file__).with_name('icl_multifaced.py'), Path(__file__).with_name('utils.py'),
+                    Path(__file__).with_name('fsa_kaggle.py'), Path(__file__).with_name('icl_multifaced_kaggle.py')]
+    source_files = [p for p in source_files if p.is_file()]
     source_files += sorted(Path(__file__).parent.glob('parse_utils/*.py'))
     source_hash = hashlib.sha256(b''.join(p.read_bytes() for p in source_files)).hexdigest()
     return dict(experiment=args.subname, dataset=args.dataset, seed=args.seed,
                 settings=settings, data_sha256=fingerprint, num_samples=len(raw['test']),
-                source_sha256=source_hash, model_revision=args.resolved_model_revision,
+                source_sha256=source_hash, model_revision=args.resolved_model_revision, adapter_sha256=adapter_hashes,
                 truncated_prompts=truncated,
                 versions={p: version(p) for p in ('torch', 'transformers', 'accelerate', 'numpy', 'scikit-learn')})
 

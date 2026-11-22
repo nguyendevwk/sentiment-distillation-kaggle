@@ -152,8 +152,8 @@ def construct_prompt_pstance(prompt, test_examples, demo_pool, k_shot):
 
 
 
-def load_dataset(data_path, demo_split='train'):
-    test_file_name = os.path.join(data_path, 'test.json')
+def load_dataset(data_path, demo_split='train', eval_split='test'):
+    test_file_name = os.path.join(data_path, eval_split + '.json')
     test_examples = load_json(test_file_name)
 
     demo_pool_file_name = os.path.join(data_path, demo_split + '.json')
@@ -249,7 +249,7 @@ if __name__ == '__main__':
 
 
 
-    raw_datasets = select_examples(load_dataset(data_path, args.demo_split), args)
+    raw_datasets = select_examples(load_dataset(data_path, args.demo_split, args.eval_split), args)
 
     if dataset == 'multifaced/pstance':
         test_examples = construct_prompt_pstance(prompts[dataset], raw_datasets['test'], raw_datasets['demo'], k_shot)
@@ -260,7 +260,7 @@ if __name__ == '__main__':
         print(test_examples[i]['prompts'])
         print('-'*100)
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, padding_side='left')
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, revision=args.model_revision, padding_side='left')
     tokenizer.pad_token = tokenizer.eos_token
 
 
@@ -282,20 +282,40 @@ if __name__ == '__main__':
 
     label_ids = get_label_list(tokenizer, dataset)
     results = []
+    timings, measured_examples, warmed = [], 0, False
+    cuda = torch.cuda.is_available()
     with torch.inference_mode():
         for batch in tqdm(dataloader):
+            input_ids = batch['input_ids'].to(model.device)
+            attention_mask = batch['attention_mask'].to(model.device)
+            if args.measure_inference and not warmed:
+                warmup = model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
+                del warmup
+                if cuda:
+                    torch.cuda.synchronize()
+                    torch.cuda.reset_peak_memory_stats()
+                warmed = True
+            if args.measure_inference:
+                if cuda:
+                    torch.cuda.synchronize()
+                start = time.perf_counter()
             # Same first-token decision rule as the original evaluator; no KV cache.
             output = model(
-                input_ids=batch['input_ids'].to(model.device),
-                attention_mask=batch['attention_mask'].to(model.device),
+                input_ids=input_ids,
+                attention_mask=attention_mask,
                 use_cache=False,
             )
+            if args.measure_inference:
+                if cuda:
+                    torch.cuda.synchronize()
+                timings.append(time.perf_counter() - start)
+                measured_examples += len(batch['examples'])
             scores = output.logits[:, -1, label_ids].float().cpu()
             for example, score in zip(batch['examples'], scores):
                 cache.put(example, {'prediction': id_to_label[dataset][score.argmax().item()].strip(),
                                     'prediction_score': score.tolist()})
             cache.flush()
-            del output, scores
+            del output, scores, input_ids, attention_mask
 
     for example in test_examples:
         result = dict(example)
@@ -303,5 +323,21 @@ if __name__ == '__main__':
         results.append(result)
     labels = [example['label'].lower() for example in results]
     predictions = [example['prediction'] for example in results]
+    result_metadata = dict(metadata)
+    if args.measure_inference:
+        total = sum(timings)
+        ordered = sorted(timings)
+        import math
+        result_metadata['inference_measurement'] = {
+            'scope': 'Model forward only; excludes loading, CPU tokenization, host-to-device copies and scoring; one warm-up batch.',
+            'measured_examples': measured_examples, 'measured_batches': len(timings),
+            'batch_size': args.eval_batch_size, 'forward_seconds': total,
+            'examples_per_second': measured_examples / total if total else None,
+            'amortized_ms_per_example': total * 1000 / measured_examples if measured_examples else None,
+            'mean_batch_latency_ms': total * 1000 / len(timings) if timings else None,
+            'p95_batch_latency_ms': ordered[math.ceil(.95 * len(ordered)) - 1] * 1000 if ordered else None,
+            'peak_allocated_bytes': torch.cuda.max_memory_allocated() if cuda and warmed else None,
+            'peak_reserved_bytes': torch.cuda.max_memory_reserved() if cuda and warmed else None,
+        }
     cal_metric(results, labels, predictions, seed, subname, model_name_or_path,
-               dataset, output_dir, k_shot, metadata)
+               dataset, output_dir, k_shot, result_metadata)
