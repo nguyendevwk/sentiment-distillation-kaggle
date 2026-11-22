@@ -3,6 +3,8 @@
 Runs evaluation in separate subprocesses to prevent CUDA memory fragmentation and OOM.
 Generates side-by-side comparison tables and saves evaluation_comparison.json / .md.
 """
+import os
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 import argparse
 import json
 import os

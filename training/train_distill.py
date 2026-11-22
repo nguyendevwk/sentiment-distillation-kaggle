@@ -3,6 +3,8 @@
 No teacher model, generated labels, or benchmark test feedback is used.
 Heavy dependencies are imported only by prepare/train/export commands.
 """
+import os
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 import argparse
 from collections import Counter, defaultdict
 from importlib.metadata import version
@@ -301,8 +303,11 @@ def train(args):
                 totals[r['train_group']] += loss
                 sizes[r['train_group']] += 1
                 state[f'{split}_tokens'] += len(r['input_ids'])
-                del output
+                del output, labels, b
         model.train()
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
         torch.cuda.synchronize()
         state[f'{split}_seconds'] += time.monotonic() - begin
         return {g: totals[g] / sizes[g] for g in totals}
@@ -367,7 +372,7 @@ def train(args):
             micro_losses.append(losses.detach().mean().item())
             state['train_tokens'] += sum(len(r['input_ids']) for r in rows)
             state['response_tokens'] += sum(r['response_tokens'] for r in rows)
-            del output, losses, loss
+            del output, losses, loss, weights, labels, b
         scaler.unscale_(optimizer)
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)
         old_scale = scaler.get_scale()
@@ -378,9 +383,15 @@ def train(args):
             state['optimizer_updates'] += 1
         state['step'] += 1
         if state['step'] % args.log_every == 0 or state['step'] == args.steps:
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+            vram_alloc = torch.cuda.memory_allocated() / (1024**3)
+            vram_res = torch.cuda.memory_reserved() / (1024**3)
             log({'event': 'train', 'response_ce': sum(micro_losses) / len(micro_losses),
                  'grad_norm': float(grad_norm), 'learning_rate': scheduler.get_last_lr()[0],
                  'train_tokens': state['train_tokens'], 'response_tokens': state['response_tokens'],
+                 'vram_alloc_gb': round(vram_alloc, 2), 'vram_reserved_gb': round(vram_res, 2),
                  'optimizer_updates': state['optimizer_updates']})
         if state['step'] % args.probe_every == 0 or state['step'] == args.steps:
             losses = measure('probe')

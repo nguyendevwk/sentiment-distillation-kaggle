@@ -1,4 +1,6 @@
 """Shared, memory-conscious evaluation support for hosted notebooks."""
+import os
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 import hashlib
 import json
 import os
